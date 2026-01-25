@@ -3,12 +3,11 @@ Two-phase proppant transport solver.
 
 Equations:
     ∂(cw)/∂t + ∇·(cwVₚ) = 0              — mass conservation
-    Vf = -w²/(12μ(c)) · (∇P - ρ(c)g)     — Darcy's law (slot flow)
+    Vf = Poiseuille profile               — slot flow
     Vₚ = Vf + Vslip(c)                    — proppant velocity
-    ∇·(Vf + c·Vslip) = 0                  — incompressibility
 
 Closure models:
-    μ(c)  — Krieger-Dougherty viscosity
+    μ(c)  — Nolte viscosity
     ρ(c)  — linear mixture density
     Vslip — Richardson-Zaki hindered settling
 """
@@ -17,8 +16,6 @@ import numpy as np
 from numba import njit
 from dataclasses import dataclass
 from typing import Tuple
-import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
 
 
 @dataclass
@@ -26,12 +23,12 @@ class PhysicalParams:
     """Physical parameters for proppant transport."""
     # Fluid properties
     rho_f: float = 1000.0       # Fluid density [kg/m³]
-    mu_f: float = 0.001         # Fluid viscosity [Pa·s]
+    mu_f: float = 0.01          # Fluid viscosity [Pa·s] (10 mPa·s)
 
     # Proppant properties
     rho_p: float = 2650.0       # Proppant density [kg/m³]
-    d_p: float = 0.0005         # Proppant diameter [m] (500 μm)
-    c_max: float = 0.6          # Maximum packing fraction
+    d_p: float = 0.0004         # Proppant diameter [m] (400 μm)
+    c_max: float = 0.65         # Maximum packing fraction
 
     # Gravity
     g: float = 9.81             # Gravitational acceleration [m/s²]
@@ -39,17 +36,21 @@ class PhysicalParams:
     # Fracture
     w0: float = 0.005           # Fracture width [m] (5 mm)
 
+    # Flow
+    U_max: float = 0.8          # Maximum flow velocity [m/s]
+
 
 @dataclass
 class SimulationParams:
     """Simulation parameters."""
     Lx: float = 2.0             # Domain length x [m]
     Ly: float = 1.0             # Domain length y [m]
-    nx: int = 64                # Grid points x
-    ny: int = 32                # Grid points y
-    T: float = 4.0              # Total time [s]
-    dt: float = 0.005           # Time step [s]
-    save_every: int = 20        # Save interval
+    nx: int = 100               # Grid points x
+    ny: int = 50                # Grid points y
+    T: float = 3.0              # Total time [s]
+    dt: float = 0.002           # Time step [s]
+    save_every: int = 25        # Save interval
+    c_inlet: float = 0.35       # Inlet concentration
 
 
 @njit(cache=True)
@@ -59,16 +60,16 @@ def mixture_density(c: float, rho_f: float, rho_p: float) -> float:
 
 
 @njit(cache=True)
-def mixture_viscosity(c: float, mu_f: float, c_max: float) -> float:
+def nolte_viscosity(c: float, mu_f: float, c_max: float) -> float:
     """
-    Krieger-Dougherty viscosity model:
-    μ(c) = μf · (1 - c/c_max)^(-2.5·c_max)
+    Nolte viscosity model for proppant slurry:
+    μ(c) = μf · (1 + 1.25·c / (1 - c/c_max))
     """
-    if c >= c_max * 0.99:
-        c = c_max * 0.99  # Prevent singularity
-    ratio = 1.0 - c / c_max
-    exponent = -2.5 * c_max
-    return mu_f * (ratio ** exponent)
+    if c <= 0:
+        return mu_f
+    if c >= c_max * 0.98:
+        c = c_max * 0.98
+    return mu_f * (1.0 + 1.25 * c / (1.0 - c / c_max))
 
 
 @njit(cache=True)
@@ -76,12 +77,16 @@ def settling_velocity(c: float, rho_f: float, rho_p: float,
                       mu_f: float, d_p: float, g: float, c_max: float) -> float:
     """
     Richardson-Zaki hindered settling:
-    Vslip = V_stokes · (1-c)^n
+    Vslip = V_stokes · (1-c/c_max)^n
 
     V_stokes = (ρp - ρf) · g · d² / (18·μf)
-    n ≈ 4.65 for intermediate Reynolds
+    n ≈ 4.65 for creeping flow
     """
-    if c >= c_max * 0.99:
+    if c <= 0:
+        # Single particle settling
+        V_stokes = (rho_p - rho_f) * g * d_p * d_p / (18.0 * mu_f)
+        return -V_stokes
+    if c >= c_max * 0.98:
         return 0.0
 
     # Stokes settling velocity
@@ -95,31 +100,9 @@ def settling_velocity(c: float, rho_f: float, rho_p: float,
 
 
 @njit(cache=True)
-def compute_viscosity_field(c: np.ndarray, mu_f: float, c_max: float) -> np.ndarray:
-    """Compute viscosity at all grid points."""
-    nx, ny = c.shape
-    mu = np.zeros_like(c)
-    for i in range(nx):
-        for j in range(ny):
-            mu[i, j] = mixture_viscosity(c[i, j], mu_f, c_max)
-    return mu
-
-
-@njit(cache=True)
-def compute_density_field(c: np.ndarray, rho_f: float, rho_p: float) -> np.ndarray:
-    """Compute density at all grid points."""
-    nx, ny = c.shape
-    rho = np.zeros_like(c)
-    for i in range(nx):
-        for j in range(ny):
-            rho[i, j] = mixture_density(c[i, j], rho_f, rho_p)
-    return rho
-
-
-@njit(cache=True)
-def compute_slip_velocity(c: np.ndarray, phys: tuple) -> np.ndarray:
+def compute_slip_velocity_field(c: np.ndarray, phys: tuple) -> np.ndarray:
     """Compute vertical slip velocity field."""
-    rho_f, rho_p, mu_f, d_p, g, c_max = phys
+    rho_f, rho_p, mu_f, d_p, g, c_max, U_max = phys
     nx, ny = c.shape
     v_slip = np.zeros_like(c)
     for i in range(nx):
@@ -128,159 +111,141 @@ def compute_slip_velocity(c: np.ndarray, phys: tuple) -> np.ndarray:
     return v_slip
 
 
-def build_pressure_matrix(nx: int, ny: int, dx: float, dy: float,
-                          mobility: np.ndarray) -> sp.csr_matrix:
+@njit(cache=True)
+def create_poiseuille_velocity(nx: int, ny: int, Ly: float, U_max: float) -> np.ndarray:
     """
-    Build pressure Poisson matrix with variable mobility.
-
-    ∇·(K·∇P) = 0, where K = w²/(12μ)
+    Create Poiseuille velocity profile: u(y) = U_max * 4 * y/Ly * (1 - y/Ly)
+    Maximum at center (y = Ly/2), zero at walls.
     """
-    N = nx * ny
-
-    # Coefficient arrays
-    diag = np.zeros(N)
-    off_x = np.zeros(N)  # x+1
-    off_x_neg = np.zeros(N)  # x-1
-    off_y = np.zeros(N)  # y+1
-    off_y_neg = np.zeros(N)  # y-1
-
-    for i in range(nx):
-        for j in range(ny):
-            idx = i * ny + j
-
-            # Interior points
-            if 0 < i < nx-1 and 0 < j < ny-1:
-                # Harmonic average of mobility at cell faces
-                K_e = 2.0 * mobility[i,j] * mobility[i+1,j] / (mobility[i,j] + mobility[i+1,j] + 1e-10)
-                K_w = 2.0 * mobility[i,j] * mobility[i-1,j] / (mobility[i,j] + mobility[i-1,j] + 1e-10)
-                K_n = 2.0 * mobility[i,j] * mobility[i,j+1] / (mobility[i,j] + mobility[i,j+1] + 1e-10)
-                K_s = 2.0 * mobility[i,j] * mobility[i,j-1] / (mobility[i,j] + mobility[i,j-1] + 1e-10)
-
-                diag[idx] = -(K_e + K_w) / dx**2 - (K_n + K_s) / dy**2
-                off_x[idx] = K_e / dx**2
-                off_x_neg[idx] = K_w / dx**2
-                off_y[idx] = K_n / dy**2
-                off_y_neg[idx] = K_s / dy**2
-            else:
-                # Boundary: Dirichlet (P=0 at left, P=0 at right) or Neumann
-                diag[idx] = 1.0
-
-    # Build sparse matrix
-    diagonals = [diag, off_x[:-ny], off_x_neg[ny:], off_y[:-1], off_y_neg[1:]]
-    offsets = [0, ny, -ny, 1, -1]
-
-    # Fix the off-diagonal terms at boundaries
-    A = sp.diags(diagonals, offsets, shape=(N, N), format='csr')
-
-    return A
+    u = np.zeros((nx, ny))
+    for j in range(ny):
+        y_norm = j / (ny - 1)  # 0 to 1
+        vel = U_max * 4.0 * y_norm * (1.0 - y_norm)
+        for i in range(nx):
+            u[i, j] = vel
+    return u
 
 
 @njit(cache=True)
-def compute_velocity_from_pressure(P: np.ndarray, c: np.ndarray, w: np.ndarray,
-                                   dx: float, dy: float, phys: tuple) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute fluid velocity from pressure gradient.
-    Vf = -w²/(12μ(c)) · (∇P - ρ(c)g)
-    """
-    rho_f, rho_p, mu_f, d_p, g, c_max = phys
-    nx, ny = P.shape
-
-    u = np.zeros((nx, ny))  # x-velocity
-    v = np.zeros((nx, ny))  # y-velocity
-
-    for i in range(1, nx-1):
-        for j in range(1, ny-1):
-            mu = mixture_viscosity(c[i,j], mu_f, c_max)
-            rho = mixture_density(c[i,j], rho_f, rho_p)
-            mobility = w[i,j]**2 / (12.0 * mu)
-
-            # Pressure gradient
-            dPdx = (P[i+1,j] - P[i-1,j]) / (2.0 * dx)
-            dPdy = (P[i,j+1] - P[i,j-1]) / (2.0 * dy)
-
-            # Darcy velocity (gravity acts in -y direction)
-            u[i,j] = -mobility * dPdx
-            v[i,j] = -mobility * (dPdy + rho * g)
-
-    return u, v
-
-
-@njit(cache=True)
-def advection_step(c: np.ndarray, w: np.ndarray,
-                   u_p: np.ndarray, v_p: np.ndarray,
-                   dx: float, dy: float, dt: float) -> np.ndarray:
+def advection_step(c: np.ndarray, u_p: np.ndarray, v_p: np.ndarray,
+                   dx: float, dy: float, dt: float, c_max: float) -> np.ndarray:
     """
     Advection step for concentration using upwind scheme.
-    ∂(cw)/∂t + ∇·(cwVₚ) = 0
+    ∂c/∂t + ∇·(c·Vₚ) = 0
     """
     nx, ny = c.shape
     c_new = c.copy()
 
     for i in range(1, nx-1):
         for j in range(1, ny-1):
-            # Fluxes at cell faces (upwind)
-            # East face
-            if u_p[i,j] > 0:
-                flux_e = c[i,j] * w[i,j] * u_p[i,j]
+            # Upwind scheme for advection
+            # X-direction
+            if u_p[i, j] > 0:
+                dc_dx = (c[i, j] - c[i-1, j]) / dx
             else:
-                flux_e = c[i+1,j] * w[i+1,j] * u_p[i,j] if i+1 < nx else 0
+                dc_dx = (c[i+1, j] - c[i, j]) / dx
 
-            # West face
-            if u_p[i-1,j] > 0:
-                flux_w = c[i-1,j] * w[i-1,j] * u_p[i-1,j]
+            # Y-direction
+            if v_p[i, j] > 0:
+                dc_dy = (c[i, j] - c[i, j-1]) / dy
             else:
-                flux_w = c[i,j] * w[i,j] * u_p[i-1,j]
+                dc_dy = (c[i, j+1] - c[i, j]) / dy
 
-            # North face
-            if v_p[i,j] > 0:
-                flux_n = c[i,j] * w[i,j] * v_p[i,j]
-            else:
-                flux_n = c[i,j+1] * w[i,j+1] * v_p[i,j] if j+1 < ny else 0
+            # Advection
+            advection = u_p[i, j] * dc_dx + v_p[i, j] * dc_dy
 
-            # South face
-            if v_p[i,j-1] > 0:
-                flux_s = c[i,j-1] * w[i,j-1] * v_p[i,j-1]
-            else:
-                flux_s = c[i,j] * w[i,j] * v_p[i,j-1]
-
-            # Update
-            div_flux = (flux_e - flux_w) / dx + (flux_n - flux_s) / dy
-            c_new[i,j] = c[i,j] - dt / w[i,j] * div_flux
+            c_new[i, j] = c[i, j] - dt * advection
 
     # Clamp concentration
     for i in range(nx):
         for j in range(ny):
-            if c_new[i,j] < 0:
-                c_new[i,j] = 0.0
-            if c_new[i,j] > 0.6:
-                c_new[i,j] = 0.6
+            if c_new[i, j] < 0:
+                c_new[i, j] = 0.0
+            if c_new[i, j] > c_max:
+                c_new[i, j] = c_max
 
     return c_new
 
 
 @njit(cache=True)
-def apply_boundary_conditions(c: np.ndarray, c_inlet: float) -> np.ndarray:
+def apply_boundary_conditions(c: np.ndarray, c_inlet: float, c_max: float) -> np.ndarray:
     """Apply boundary conditions to concentration."""
     nx, ny = c.shape
 
-    # Left: inlet (Dirichlet)
+    # Left: inlet (Dirichlet) - inject proppant
     for j in range(ny):
         c[0, j] = c_inlet
 
-    # Right: outflow (Neumann)
+    # Right: outflow (Neumann / zero gradient)
     for j in range(ny):
         c[nx-1, j] = c[nx-2, j]
 
-    # Top/Bottom: no-flux (Neumann)
-    for i in range(nx):
-        c[i, 0] = c[i, 1]
+    # Top/Bottom: impermeable walls - true no-flux
+    # Proppant settling is blocked by walls, so concentration can build up
+    for i in range(1, nx-1):
+        # Top wall: no-flux (Neumann)
         c[i, ny-1] = c[i, ny-2]
+        # Bottom wall: no-flux (Neumann)
+        # Proppant accumulates here due to settling
+        c[i, 0] = c[i, 1]
 
     return c
 
 
+@njit(cache=True)
+def advection_step_with_settling(c: np.ndarray, u_f: np.ndarray, v_slip: np.ndarray,
+                                  dx: float, dy: float, dt: float, c_max: float) -> np.ndarray:
+    """
+    Advection step with explicit settling term.
+    ∂c/∂t + u·∂c/∂x + ∂(c·v_slip)/∂y = 0
+    """
+    nx, ny = c.shape
+    c_new = c.copy()
+
+    for i in range(1, nx-1):
+        for j in range(1, ny-1):
+            # Horizontal advection (upwind for u > 0)
+            if u_f[i, j] > 0:
+                dc_dx = (c[i, j] - c[i-1, j]) / dx
+            else:
+                dc_dx = (c[i+1, j] - c[i, j]) / dx
+
+            # Vertical settling flux (conservative form)
+            # Flux at top of cell (j+1/2)
+            v_top = 0.5 * (v_slip[i, j] + v_slip[i, j+1]) if j < ny-2 else v_slip[i, j]
+            c_top = c[i, j] if v_top < 0 else c[i, j+1] if j < ny-2 else c[i, j]
+            flux_top = c_top * v_top
+
+            # Flux at bottom of cell (j-1/2)
+            v_bot = 0.5 * (v_slip[i, j] + v_slip[i, j-1]) if j > 1 else v_slip[i, j]
+            c_bot = c[i, j-1] if v_bot < 0 else c[i, j]
+            flux_bot = c_bot * v_bot
+
+            # At boundaries, no flux
+            if j == 1:
+                flux_bot = 0.0
+            if j == ny-2:
+                flux_top = 0.0
+
+            # Update
+            advection_x = u_f[i, j] * dc_dx
+            settling_div = (flux_top - flux_bot) / dy
+
+            c_new[i, j] = c[i, j] - dt * (advection_x + settling_div)
+
+    # Clamp concentration
+    for i in range(nx):
+        for j in range(ny):
+            if c_new[i, j] < 0:
+                c_new[i, j] = 0.0
+            if c_new[i, j] > c_max:
+                c_new[i, j] = c_max
+
+    return c_new
+
+
 class ProppantTransportSolver:
-    """Full two-phase proppant transport solver."""
+    """Two-phase proppant transport solver with Poiseuille flow."""
 
     def __init__(self, sim_params: SimulationParams, phys_params: PhysicalParams):
         self.sim = sim_params
@@ -294,57 +259,35 @@ class ProppantTransportSolver:
         self.y = np.linspace(0, sim_params.Ly, sim_params.ny)
         self.X, self.Y = np.meshgrid(self.x, self.y, indexing='ij')
 
-        # Fracture width (constant for now)
-        self.w = np.ones((sim_params.nx, sim_params.ny)) * phys_params.w0
+        # Poiseuille velocity field (fluid)
+        self.u_f = create_poiseuille_velocity(
+            sim_params.nx, sim_params.ny, sim_params.Ly, phys_params.U_max
+        )
+        self.v_f = np.zeros((sim_params.nx, sim_params.ny))
 
         # Pack physical params for numba
         self.phys_tuple = (
             phys_params.rho_f, phys_params.rho_p, phys_params.mu_f,
-            phys_params.d_p, phys_params.g, phys_params.c_max
+            phys_params.d_p, phys_params.g, phys_params.c_max, phys_params.U_max
         )
 
-    def solve_pressure(self, c: np.ndarray) -> np.ndarray:
-        """Solve pressure equation."""
-        nx, ny = self.sim.nx, self.sim.ny
-
-        # Compute mobility field: K = w²/(12μ)
-        mu = compute_viscosity_field(c, self.phys.mu_f, self.phys.c_max)
-        mobility = self.w**2 / (12.0 * mu)
-
-        # Simple approach: prescribed pressure drop
-        # P = P_in at left, P = 0 at right
-        P = np.zeros((nx, ny))
-        P_in = 1000.0  # Inlet pressure [Pa]
-
-        # Linear pressure gradient as initial guess / simple solution
-        for i in range(nx):
-            P[i, :] = P_in * (1.0 - self.x[i] / self.sim.Lx)
-
-        return P
-
-    def compute_velocities(self, P: np.ndarray, c: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Compute fluid and proppant velocities."""
-        # Fluid velocity from pressure
-        u_f, v_f = compute_velocity_from_pressure(
-            P, c, self.w, self.dx, self.dy, self.phys_tuple
-        )
-
-        # Slip velocity (settling)
-        v_slip = compute_slip_velocity(c, self.phys_tuple)
+    def compute_proppant_velocity(self, c: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute proppant velocity = fluid velocity + settling."""
+        # Slip velocity (settling, depends on concentration)
+        v_slip = compute_slip_velocity_field(c, self.phys_tuple)
 
         # Proppant velocity
-        u_p = u_f.copy()
-        v_p = v_f + v_slip
+        u_p = self.u_f.copy()
+        v_p = self.v_f + v_slip
 
-        return u_f, v_f, u_p, v_p
+        return u_p, v_p
 
-    def solve(self, c0: np.ndarray, c_inlet: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
+    def solve(self, c0: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Solve the full transport problem.
+        Solve the transport problem with continuous inlet injection.
 
         Args:
-            c0: Initial concentration field
-            c_inlet: Inlet concentration (0 = no proppant at inlet)
+            c0: Initial concentration field (default: zero everywhere)
 
         Returns:
             times: Time array
@@ -357,24 +300,30 @@ class ProppantTransportSolver:
         times = np.zeros(n_saves)
         concentrations = np.zeros((n_saves, p.nx, p.ny))
 
-        c = c0.copy()
-        c = apply_boundary_conditions(c, c_inlet)
+        # Start with zero concentration (clean fracture)
+        if c0 is None:
+            c = np.zeros((p.nx, p.ny))
+        else:
+            c = c0.copy()
+
+        # Apply inlet BC
+        c = apply_boundary_conditions(c, p.c_inlet, self.phys.c_max)
         concentrations[0] = c.copy()
 
         save_idx = 1
 
         for step in range(1, n_steps + 1):
-            # Solve pressure
-            P = self.solve_pressure(c)
+            # Compute settling velocity field
+            v_slip = compute_slip_velocity_field(c, self.phys_tuple)
 
-            # Compute velocities
-            u_f, v_f, u_p, v_p = self.compute_velocities(P, c)
+            # Advection + settling step
+            c = advection_step_with_settling(
+                c, self.u_f, v_slip,
+                self.dx, self.dy, p.dt, self.phys.c_max
+            )
 
-            # Advection step
-            c = advection_step(c, self.w, u_p, v_p, self.dx, self.dy, p.dt)
-
-            # Boundary conditions
-            c = apply_boundary_conditions(c, c_inlet)
+            # Boundary conditions (continuous injection)
+            c = apply_boundary_conditions(c, p.c_inlet, self.phys.c_max)
 
             # Save
             if step % p.save_every == 0:
@@ -386,44 +335,42 @@ class ProppantTransportSolver:
 
 
 def create_initial_condition(X: np.ndarray, Y: np.ndarray,
-                             ic_type: str = 'gaussian', **kwargs) -> np.ndarray:
+                             ic_type: str = 'empty', **kwargs) -> np.ndarray:
     """Create initial concentration field."""
+    c_max = kwargs.get('c_max', 0.65)
+
     if ic_type == 'gaussian':
         x0 = kwargs.get('x0', 0.3)
         y0 = kwargs.get('y0', 0.5)
         sigma_x = kwargs.get('sigma_x', 0.1)
         sigma_y = kwargs.get('sigma_y', 0.15)
-        amplitude = kwargs.get('amplitude', 0.4)  # Max ~0.4 to stay below c_max
+        amplitude = kwargs.get('amplitude', 0.35)
 
         c0 = amplitude * np.exp(
             -((X - x0)**2 / (2 * sigma_x**2) + (Y - y0)**2 / (2 * sigma_y**2))
         )
 
     elif ic_type == 'step':
-        x_thresh = kwargs.get('x_thresh', 0.5)
+        x_thresh = kwargs.get('x_thresh', 0.3)
         amplitude = kwargs.get('amplitude', 0.3)
         c0 = np.where(X < x_thresh, amplitude, 0.0)
 
-    elif ic_type == 'layer':
-        # Horizontal layer of proppant
-        y_center = kwargs.get('y_center', 0.3)
-        thickness = kwargs.get('thickness', 0.2)
-        amplitude = kwargs.get('amplitude', 0.3)
-        c0 = np.where(np.abs(Y - y_center) < thickness/2, amplitude, 0.0)
+    elif ic_type == 'empty':
+        # Empty fracture - proppant will be injected from left
+        c0 = np.zeros_like(X)
 
     else:
         c0 = np.zeros_like(X)
 
-    return np.clip(c0, 0, 0.55)
+    return np.clip(c0, 0, c_max * 0.95)
 
 
 # Warm up JIT
 def _warmup():
-    sim = SimulationParams(nx=16, ny=8, T=0.02, dt=0.01, save_every=1)
+    sim = SimulationParams(nx=20, ny=10, T=0.05, dt=0.01, save_every=2, c_inlet=0.3)
     phys = PhysicalParams()
     solver = ProppantTransportSolver(sim, phys)
-    c0 = np.random.rand(16, 8) * 0.3
-    solver.solve(c0)
+    solver.solve()
 
 _warmup()
 
@@ -431,16 +378,26 @@ _warmup()
 if __name__ == '__main__':
     import time
 
-    sim = SimulationParams(nx=64, ny=32, T=2.0, dt=0.005, save_every=20)
-    phys = PhysicalParams()
+    # Simulate proppant injection
+    sim = SimulationParams(
+        nx=100, ny=50,
+        T=3.0, dt=0.002,
+        save_every=25,
+        c_inlet=0.35
+    )
+    phys = PhysicalParams(
+        mu_f=0.01,      # 10 mPa·s
+        g=9.81,
+        U_max=0.8
+    )
 
     solver = ProppantTransportSolver(sim, phys)
-    c0 = create_initial_condition(solver.X, solver.Y, 'gaussian', x0=0.3, y0=0.5)
 
     start = time.perf_counter()
-    times, conc = solver.solve(c0)
+    times, conc = solver.solve()  # Empty initial, inject from left
     elapsed = time.perf_counter() - start
 
     print(f"Solver time: {elapsed*1000:.1f} ms")
     print(f"Frames: {len(times)}")
     print(f"C range: {conc.min():.3f} - {conc.max():.3f}")
+    print(f"Final max at t={times[-1]:.2f}s: {conc[-1].max():.3f}")

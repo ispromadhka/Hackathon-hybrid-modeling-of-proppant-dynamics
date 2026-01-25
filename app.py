@@ -32,7 +32,7 @@ def main():
     elif args.train:
         from src.training.train import main as train_main
         print(f"Training for {args.epochs} epochs...")
-        train_main()
+        train_main(epochs=args.epochs)
 
     else:
         from src.visualization.app import run_app

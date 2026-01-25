@@ -1,49 +1,38 @@
 """
 Dataset generation and loading for FNO training.
+Uses the proppant transport solver with inlet injection.
 """
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import Tuple, Optional
 import json
 from tqdm import tqdm
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.solver.advection_diffusion import (
+from src.solver.proppant_transport import (
     SimulationParams,
-    AdvectionDiffusionSolver,
-    create_initial_condition,
-    generate_training_sample
+    PhysicalParams,
+    ProppantTransportSolver,
 )
 
 
 class ProppantDataset(Dataset):
-    """Dataset of advection-diffusion simulations."""
+    """Dataset of proppant transport simulations."""
 
-    def __init__(
-        self,
-        data_dir: Path,
-        transform=None
-    ):
-        """
-        Args:
-            data_dir: Directory containing .npz files
-            transform: Optional transform to apply
-        """
+    def __init__(self, data_dir: Path, transform=None):
         self.data_dir = Path(data_dir)
         self.transform = transform
 
-        # Find all data files
         self.files = sorted(self.data_dir.glob("sample_*.npz"))
 
         if len(self.files) == 0:
             raise ValueError(f"No data files found in {data_dir}")
 
-        # Load first file to get dimensions
         with np.load(self.files[0]) as data:
             self.n_times = data['concentrations'].shape[0]
             self.nx = data['concentrations'].shape[1]
@@ -54,22 +43,18 @@ class ProppantDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         with np.load(self.files[idx]) as data:
-            c0 = data['concentrations'][0]  # Initial condition
-            trajectory = data['concentrations']  # Full trajectory
-            u = data['velocity_u']
-            v = data['velocity_v']
+            c0 = data['concentrations'][0]
+            trajectory = data['concentrations']
+            params = data['params']  # [c_inlet, U_max, g, mu_f, d_p]
 
-        # Convert to tensors
         c0 = torch.from_numpy(c0).float()
         trajectory = torch.from_numpy(trajectory).float()
-        u = torch.from_numpy(u).float()
-        v = torch.from_numpy(v).float()
+        params = torch.from_numpy(params).float()
 
         sample = {
             'c0': c0,
             'trajectory': trajectory,
-            'u': u,
-            'v': v
+            'params': params,
         }
 
         if self.transform:
@@ -78,96 +63,85 @@ class ProppantDataset(Dataset):
         return sample
 
 
+def generate_training_sample(sim_params: SimulationParams, phys_params: PhysicalParams) -> dict:
+    """Generate a single training sample."""
+    solver = ProppantTransportSolver(sim_params, phys_params)
+    times, concentrations = solver.solve()
+
+    return {
+        'concentrations': concentrations,
+        'times': times,
+        'params': np.array([
+            sim_params.c_inlet,
+            phys_params.U_max,
+            phys_params.g,
+            phys_params.mu_f,
+            phys_params.d_p
+        ], dtype=np.float32)
+    }
+
+
 def generate_dataset(
     output_dir: Path,
-    n_samples: int = 1000,
-    params: Optional[SimulationParams] = None,
+    n_samples: int = 500,
     seed: int = 42
 ):
     """
-    Generate synthetic training dataset.
-
-    Args:
-        output_dir: Directory to save data
-        n_samples: Number of samples to generate
-        params: Simulation parameters (uses defaults if None)
-        seed: Random seed
+    Generate training dataset with varied physical parameters.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if params is None:
-        params = SimulationParams(
-            nx=128, ny=64,
-            T=4.0, dt=0.001,
-            D=0.01, U_max=1.0,
-            save_every=100  # ~40 frames for T=4.0
-        )
-
     np.random.seed(seed)
 
-    # Save metadata
+    # Fixed simulation grid
+    nx, ny = 64, 32
+    T, dt = 2.0, 0.004
+    save_every = 20
+
     metadata = {
         'n_samples': n_samples,
-        'nx': params.nx,
-        'ny': params.ny,
-        'T': params.T,
-        'dt': params.dt,
-        'D': params.D,
-        'U_max': params.U_max,
-        'save_every': params.save_every,
-        'Lx': params.Lx,
-        'Ly': params.Ly
+        'nx': nx,
+        'ny': ny,
+        'Lx': 2.0,
+        'Ly': 1.0,
+        'T': T,
+        'dt': dt,
+        'save_every': save_every,
     }
 
     with open(output_dir / 'metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
 
     for i in tqdm(range(n_samples), desc="Generating samples"):
-        # Randomize initial conditions
-        ic_type = np.random.choice(['gaussian', 'step', 'random'], p=[0.6, 0.2, 0.2])
+        # Randomize physical parameters
+        c_inlet = np.random.uniform(0.15, 0.45)
+        U_max = np.random.uniform(0.4, 1.2)
+        g = np.random.uniform(5.0, 15.0)
+        mu_f = np.random.uniform(0.005, 0.05)  # 5-50 mPa·s
+        d_p = np.random.uniform(0.0002, 0.0008)  # 200-800 μm
 
-        if ic_type == 'gaussian':
-            ic_params = {
-                'ic_type': 'gaussian',
-                'x0': np.random.uniform(0.1, 0.5),
-                'y0': np.random.uniform(0.2, 0.8),
-                'sigma_x': np.random.uniform(0.05, 0.2),
-                'sigma_y': np.random.uniform(0.05, 0.2),
-                'amplitude': np.random.uniform(0.3, 0.8)
-            }
-        elif ic_type == 'step':
-            ic_params = {
-                'ic_type': 'step',
-                'x_thresh': np.random.uniform(0.2, 0.6),
-                'amplitude': np.random.uniform(0.3, 0.7)
-            }
-        else:
-            ic_params = {
-                'ic_type': 'random',
-                'amplitude': np.random.uniform(0.3, 0.6),
-                'seed': i
-            }
-
-        # Optionally vary physics parameters
-        sample_params = SimulationParams(
-            nx=params.nx, ny=params.ny,
-            Lx=params.Lx, Ly=params.Ly,
-            T=params.T, dt=params.dt,
-            D=np.random.uniform(0.005, 0.02),  # Vary diffusion
-            U_max=np.random.uniform(0.5, 1.5),  # Vary velocity
-            save_every=params.save_every
+        sim_params = SimulationParams(
+            nx=nx, ny=ny,
+            T=T, dt=dt,
+            save_every=save_every,
+            c_inlet=c_inlet
         )
 
-        sample = generate_training_sample(sample_params, ic_params)
+        phys_params = PhysicalParams(
+            g=g,
+            mu_f=mu_f,
+            U_max=U_max,
+            d_p=d_p
+        )
 
-        # Save
+        sample = generate_training_sample(sim_params, phys_params)
+
         np.savez_compressed(
             output_dir / f'sample_{i:05d}.npz',
             concentrations=sample['concentrations'].astype(np.float32),
-            velocity_u=sample['velocity_u'].astype(np.float32),
-            velocity_v=sample['velocity_v'].astype(np.float32),
-            times=sample['times'].astype(np.float32)
+            times=sample['times'].astype(np.float32),
+            params=sample['params']
         )
 
     print(f"Generated {n_samples} samples in {output_dir}")
@@ -177,14 +151,11 @@ def create_dataloaders(
     data_dir: Path,
     batch_size: int = 16,
     train_ratio: float = 0.8,
-    num_workers: int = 4
+    num_workers: int = 0
 ) -> Tuple[DataLoader, DataLoader]:
-    """
-    Create train and validation dataloaders.
-    """
+    """Create train and validation dataloaders."""
     dataset = ProppantDataset(data_dir)
 
-    # Split
     n_train = int(len(dataset) * train_ratio)
     n_val = len(dataset) - n_train
 
@@ -212,14 +183,13 @@ def create_dataloaders(
 
 
 if __name__ == '__main__':
-    # Generate small test dataset
     output_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
     generate_dataset(output_dir, n_samples=10)
 
-    # Test loading
     dataset = ProppantDataset(output_dir)
     print(f"Dataset size: {len(dataset)}")
 
     sample = dataset[0]
     print(f"c0 shape: {sample['c0'].shape}")
     print(f"trajectory shape: {sample['trajectory'].shape}")
+    print(f"params: {sample['params']}")
