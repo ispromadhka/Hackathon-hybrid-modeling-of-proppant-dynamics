@@ -1,0 +1,15 @@
+# Core
+numpy>=1.21.0
+scipy>=1.7.0
+torch>=2.0.0
+
+# Visualization
+plotly>=5.0.0
+dash>=2.0.0
+
+# Training
+tqdm>=4.60.0
+
+# Jupyter (optional)
+jupyter
+matplotlib
