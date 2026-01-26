@@ -42,8 +42,9 @@ class ProppantSolver:
         w0: float = 0.01,
         # Flow
         Q_inlet: float = 0.05,
-        inlet_fraction: float = 1/3,
-        # Injection pattern (None = continuous)
+        inlet_fraction: float = 0.1,  # Small slit (10% of height)
+        # Injection pattern (None = 0.5s pulse, set injection_duration for custom)
+        injection_duration: float = 0.5,  # Duration of proppant injection [s]
         c_in_times: np.ndarray = None,
         c_in_arr: np.ndarray = None,
         # Numerics
@@ -84,9 +85,11 @@ class ProppantSolver:
         Q_inlet : float
             Total inlet flow rate [m²/s]
         inlet_fraction : float
-            Fraction of height for inlet
+            Fraction of height for inlet (default 0.1 = 10%)
+        injection_duration : float
+            Duration of proppant injection [s] (default 0.5s)
         c_in_times : np.ndarray, optional
-            Times at which inlet concentration changes (for pulsed injection)
+            Times at which inlet concentration changes (overrides injection_duration)
         c_in_arr : np.ndarray, optional
             Concentration values for each time interval
         cfl : float
@@ -110,11 +113,13 @@ class ProppantSolver:
         self.x = np.linspace(0, Lx, nx, endpoint=False) + Lx / nx / 2
         self.y = np.linspace(0, Ly, ny, endpoint=False) + Ly / ny / 2
 
-        # Inlet profile
-        chi = Ly * inlet_fraction
+        # Inlet profile: small slit in upper-center region (right side of center)
+        # chi is the width of the inlet slit
+        chi = Ly * inlet_fraction  # inlet width
         y = self.y
-        q_in = Q_inlet / chi * np.where(np.abs(y - Ly/2) < chi/2, 1.0, 0.0)
-        q_in = (q_in + q_in[::-1]) / 2  # Symmetrize
+        # Position inlet at y = 0.65*Ly (center-right position)
+        inlet_center = Ly * 0.65
+        q_in = Q_inlet / chi * np.where(np.abs(y - inlet_center) < chi/2, 1.0, 0.0)
         q_out = -np.mean(q_in)
 
         # Configuration
@@ -154,7 +159,8 @@ class ProppantSolver:
             'boundary_conditions': {
                 'q_in': q_in,
                 'q_out': q_out,
-                'c_in_times': c_in_times if c_in_times is not None else np.array([T * 100]),
+                # Default: pulse injection for injection_duration seconds, then stop
+                'c_in_times': c_in_times if c_in_times is not None else np.array([injection_duration]),
                 'c_in_arr': c_in_arr if c_in_arr is not None else np.array([c_inlet, 0.0]),
             }
         }
@@ -167,6 +173,7 @@ class ProppantSolver:
             'r_particle': r_particle,
             'Q_inlet': Q_inlet,
             'inlet_fraction': inlet_fraction,
+            'injection_duration': injection_duration,
             'rk_stages': rk_stages,
             'lim_type': lim_type,
         }
