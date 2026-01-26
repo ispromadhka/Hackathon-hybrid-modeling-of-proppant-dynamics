@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--workers', type=int, default=1, help='Parallel workers for generation')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
 
@@ -40,8 +41,8 @@ def main():
 
     elif args.train:
         from src.training.train import main as train_main
-        print(f"Training for {args.epochs} epochs (lr={args.lr})...")
-        train_main(epochs=args.epochs, lr=args.lr)
+        print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})...")
+        train_main(epochs=args.epochs, lr=args.lr, patience=args.patience)
 
     else:
         from src.visualization.app import run_app

@@ -36,7 +36,7 @@ class RelativeLpLoss(nn.Module):
 
 
 class Trainer:
-    """Training manager for FNO model."""
+    """Training manager for FNO model with early stopping."""
 
     def __init__(
         self,
@@ -46,7 +46,9 @@ class Trainer:
         device: str = 'cpu',
         lr: float = 1e-3,
         n_epochs: int = 100,
-        checkpoint_dir: Path = None
+        checkpoint_dir: Path = None,
+        patience: int = 15,  # Early stopping patience
+        min_delta: float = 1e-4  # Minimum improvement threshold
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -75,6 +77,12 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
+
+        # Early stopping
+        self.patience = patience
+        self.min_delta = min_delta
+        self.patience_counter = 0
+        self.early_stop = False
 
     def train_epoch(self) -> float:
         self.model.train()
@@ -142,6 +150,8 @@ class Trainer:
         print(f"Training on {self.device}")
         print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print(f"Scheduler: {self.warmup_epochs} warmup epochs + cosine annealing")
+        print(f"Early stopping: patience={self.patience}, min_delta={self.min_delta}")
+        print("-" * 80)
 
         initial_lr = self.optimizer.param_groups[0]['lr']
 
@@ -160,28 +170,54 @@ class Trainer:
             train_loss = self.train_epoch()
             val_loss = self.validate()
 
-            is_best = val_loss < self.best_val_loss
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
+
+            # Check for improvement
+            is_best = val_loss < (self.best_val_loss - self.min_delta)
             if is_best:
                 self.best_val_loss = val_loss
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
 
             self.save_checkpoint(epoch, is_best)
 
             elapsed = time.time() - t0
             lr = self.optimizer.param_groups[0]['lr']
 
+            # Quality metric: convert relative L2 to accuracy percentage
+            quality = max(0, (1 - val_loss) * 100)
+
+            status = ""
+            if is_best:
+                status = " [BEST]"
+            elif self.patience_counter > 0:
+                status = f" [{self.patience_counter}/{self.patience}]"
+
             print(
                 f"Epoch {epoch:3d} | "
                 f"Train: {train_loss:.4e} | "
                 f"Val: {val_loss:.4e} | "
+                f"Quality: {quality:.1f}% | "
                 f"LR: {lr:.2e} | "
                 f"Time: {elapsed:.1f}s"
-                + (" *" if is_best else "")
+                + status
             )
 
-        print(f"\nBest val loss: {self.best_val_loss:.4e}")
+            # Early stopping check
+            if self.patience_counter >= self.patience:
+                print(f"\nEarly stopping triggered after {epoch} epochs (no improvement for {self.patience} epochs)")
+                self.early_stop = True
+                break
+
+        print("-" * 80)
+        print(f"Training finished!")
+        print(f"Best validation loss: {self.best_val_loss:.4e}")
+        print(f"Best quality: {max(0, (1 - self.best_val_loss) * 100):.1f}%")
 
 
-def main(epochs: int = 100, lr: float = 1e-3):
+def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
     """Main training entry point."""
     data_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
     checkpoint_dir = Path(__file__).parent.parent.parent / 'checkpoints'
@@ -224,7 +260,8 @@ def main(epochs: int = 100, lr: float = 1e-3):
         device=device,
         lr=lr,
         n_epochs=epochs,
-        checkpoint_dir=checkpoint_dir
+        checkpoint_dir=checkpoint_dir,
+        patience=patience
     )
 
     trainer.train()
