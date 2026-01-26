@@ -1,6 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from .PoissonCPU import PressureSolverCPU
 from .TransportCPU import TransportSolverCPU
 
@@ -47,7 +46,7 @@ class SolverCPU():
         
         self.Q = np.zeros(shape=(self.Nt, self.Ny, self.Nx))
         self.P = np.zeros(shape=(self.Nt, self.Ny, self.Nx))
-        self.w = physics['w']*np.ones(shape=(self.Ny, self.Nx))
+        self.w = physics['w'].copy()
         
         self.Vx = np.zeros(shape=(self.Nt, self.Ny, self.Nx+1))
         self.Vy = np.zeros(shape=(self.Nt, self.Ny+1, self.Nx))
@@ -66,8 +65,7 @@ class SolverCPU():
     def rho(self, c: np.ndarray) -> np.ndarray:
         return self.rho1 + (self.rho2 - self.rho1) * c
 
-    def pressure_rhs(self, KrhoG_center: np.ndarray,
-        wcVs_center: np.ndarray) -> np.ndarray:
+    def pressure_rhs(self, KrhoG_center: np.ndarray, wcVs_center: np.ndarray) -> np.ndarray:
         div_KrhoG = (KrhoG_center[1:] - KrhoG_center[:-1]) / self.dy
         div_wcVs = (wcVs_center[1:] - wcVs_center[:-1]) / self.dy
         f = - (div_KrhoG + div_wcVs)
@@ -77,7 +75,6 @@ class SolverCPU():
         rhs[:, -1] += self.q_out  * self.dy
         rhs[0] += -KrhoG_center[0] * self.dx - wcVs_center[0] * self.dx
         rhs[-1] += KrhoG_center[-1] * self.dx + wcVs_center[-1] * self.dx
-        
         return rhs
     
     def Harmonic(self, x):
@@ -149,13 +146,13 @@ class SolverCPU():
 
         while current_time < tmax:
             q, p, vx, vy, current_time = self.make_step(q, p, vx, vy, current_time)
-
+            
             if current_time >= self.dT * (self.step + 1) - 1e-10:
                 self.step += 1
                 self.times[self.step] = current_time
                 self.Q[self.step], self.P[self.step], self.Vx[self.step], self.Vy[self.step] = q, p, vx, vy
                 progress_bar.update(1)
-
+                
                 if self.step == self.Nt - 1:
                     print("Nt-limit")
                     break

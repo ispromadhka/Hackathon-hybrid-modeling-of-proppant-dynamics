@@ -2,7 +2,7 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import itertools
 import hashlib
 import warnings
@@ -89,12 +89,11 @@ def run_simulation(params):
         frame_interval = max(1, total_steps // 100)
         
         for i in range(0, total_steps, frame_interval):
-            if i <= s.step:
-                time_series_data.append(s.Q[i].copy())
-                time_stamps.append(s.times[i])
+            time_series_data.append(s.Q[i].copy())
+            time_stamps.append(s.times[i])
         
-        if total_steps > 0 and (total_steps - 1) % frame_interval != 0:
-            last_idx = min(total_steps - 1, s.step)
+        if (total_steps - 1) % frame_interval != 0:
+            last_idx = total_steps - 1
             time_series_data.append(s.Q[last_idx].copy())
             time_stamps.append(s.times[last_idx])
     
