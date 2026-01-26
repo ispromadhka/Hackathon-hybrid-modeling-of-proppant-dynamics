@@ -37,9 +37,9 @@ def create_empty_figure(title="", show_message=None):
         )
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
-        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], constrain='domain'),
-        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], scaleanchor='x', scaleratio=1),
-        margin=dict(l=50, r=80, t=30, b=60)
+        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX]),
+        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY]),
+        margin=dict(l=50, r=80, t=30, b=50)
     )
     return fig
 
@@ -180,7 +180,7 @@ app.layout = html.Div([
                                                    'color': '#3498db', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
                           'padding': '0 10px'}),
-                dcc.Graph(id='nn-plot', style={'height': '38vh'},
+                dcc.Graph(id='nn-plot', style={'height': '42vh'},
                           figure=create_empty_figure("FNO Prediction", "Click RUN to start")),
             ], style={'padding': '2px'}),
 
@@ -193,15 +193,15 @@ app.layout = html.Div([
                                                    'color': '#e74c3c', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
                           'padding': '0 10px'}),
-                dcc.Graph(id='ns-plot', style={'height': '38vh'},
+                dcc.Graph(id='ns-plot', style={'height': '42vh'},
                           figure=create_empty_figure("Numerical Solver", "Click RUN to start")),
             ], style={'padding': '2px'}),
 
-            # Error plot
+            # Error plot - hidden when model mismatch
             html.Div([
                 html.H4("Relative L2 Error", style={'textAlign': 'center', 'margin': '2px 0',
                                                      'fontSize': '13px', 'color': '#7f8c8d'}),
-                dcc.Graph(id='error-plot', style={'height': '15vh'},
+                dcc.Graph(id='error-plot', style={'height': '12vh'},
                           figure=go.Figure().update_layout(
                               xaxis=dict(title='Time [s]'),
                               yaxis=dict(title='Error [%]'),
@@ -251,8 +251,8 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
 
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
-        xaxis=dict(title='x [m]', constrain='domain'),
-        yaxis=dict(title='y [m]', scaleanchor='x', scaleratio=1),
+        xaxis=dict(title='x [m]'),
+        yaxis=dict(title='y [m]'),
         updatemenus=[{
             'type': 'buttons',
             'showactive': True,
