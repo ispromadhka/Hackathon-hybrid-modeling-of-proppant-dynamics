@@ -26,10 +26,17 @@ def main():
     args = parser.parse_args()
 
     if args.generate:
+        import os
         from src.training.dataset import generate_dataset
         data_dir = Path(__file__).parent / 'data' / 'processed'
-        print(f"Generating {args.samples} samples with {args.workers} workers...")
-        generate_dataset(data_dir, n_samples=args.samples, n_workers=args.workers)
+
+        # -1 means use all CPU cores
+        n_workers = args.workers
+        if n_workers == -1:
+            n_workers = os.cpu_count() or 1
+
+        print(f"Generating {args.samples} samples with {n_workers} workers...")
+        generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers)
 
     elif args.train:
         from src.training.train import main as train_main
