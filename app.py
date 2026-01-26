@@ -17,7 +17,9 @@ def main():
     parser.add_argument('--generate', action='store_true', help='Generate training data')
     parser.add_argument('--train', action='store_true', help='Train FNO model')
     parser.add_argument('--samples', type=int, default=500, help='Number of samples to generate')
+    parser.add_argument('--workers', type=int, default=1, help='Parallel workers for generation')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
 
@@ -26,13 +28,13 @@ def main():
     if args.generate:
         from src.training.dataset import generate_dataset
         data_dir = Path(__file__).parent / 'data' / 'processed'
-        print(f"Generating {args.samples} samples...")
-        generate_dataset(data_dir, n_samples=args.samples)
+        print(f"Generating {args.samples} samples with {args.workers} workers...")
+        generate_dataset(data_dir, n_samples=args.samples, n_workers=args.workers)
 
     elif args.train:
         from src.training.train import main as train_main
-        print(f"Training for {args.epochs} epochs...")
-        train_main(epochs=args.epochs)
+        print(f"Training for {args.epochs} epochs (lr={args.lr})...")
+        train_main(epochs=args.epochs, lr=args.lr)
 
     else:
         from src.visualization.app import run_app
