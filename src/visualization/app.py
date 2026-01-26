@@ -36,10 +36,10 @@ def create_empty_figure(title="", show_message=None):
             font=dict(size=14, color='#7f8c8d')
         )
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=12)),
-        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX]),
-        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY]),
-        margin=dict(l=50, r=20, t=60, b=60)
+        title=dict(text=title, x=0.5, font=dict(size=11)),
+        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], constrain='domain'),
+        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], scaleanchor='x', scaleratio=1),
+        margin=dict(l=50, r=80, t=30, b=60)
     )
     return fig
 
@@ -175,40 +175,40 @@ app.layout = html.Div([
             html.Div([
                 html.Div([
                     html.H3("Neural Network (FNO)",
-                           style={'textAlign': 'center', 'color': '#3498db', 'margin': '0'}),
-                    html.Div(id='nn-time', style={'textAlign': 'center', 'fontSize': '12px',
+                           style={'color': '#3498db', 'margin': '0', 'flex': '1'}),
+                    html.Div(id='nn-time', style={'fontSize': '13px',
                                                    'color': '#3498db', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                          'padding': '0 20px'}),
-                dcc.Graph(id='nn-plot', style={'height': '32vh'},
+                          'padding': '0 10px'}),
+                dcc.Graph(id='nn-plot', style={'height': '38vh'},
                           figure=create_empty_figure("FNO Prediction", "Click RUN to start")),
-            ], style={'padding': '3px'}),
+            ], style={'padding': '2px'}),
 
             # NS Plot (bottom)
             html.Div([
                 html.Div([
                     html.H3("Numerical Solver (NS)",
-                           style={'textAlign': 'center', 'color': '#e74c3c', 'margin': '0'}),
-                    html.Div(id='ns-time', style={'textAlign': 'center', 'fontSize': '12px',
+                           style={'color': '#e74c3c', 'margin': '0', 'flex': '1'}),
+                    html.Div(id='ns-time', style={'fontSize': '13px',
                                                    'color': '#e74c3c', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                          'padding': '0 20px'}),
-                dcc.Graph(id='ns-plot', style={'height': '32vh'},
+                          'padding': '0 10px'}),
+                dcc.Graph(id='ns-plot', style={'height': '38vh'},
                           figure=create_empty_figure("Numerical Solver", "Click RUN to start")),
-            ], style={'padding': '3px'}),
+            ], style={'padding': '2px'}),
 
             # Error plot
             html.Div([
-                html.H4("Error: ||NN - NS||₂ / ||NS||₂", style={'textAlign': 'center', 'margin': '3px 0',
-                                                                 'fontSize': '14px'}),
-                dcc.Graph(id='error-plot', style={'height': '18vh'},
+                html.H4("Relative L2 Error", style={'textAlign': 'center', 'margin': '2px 0',
+                                                     'fontSize': '13px', 'color': '#7f8c8d'}),
+                dcc.Graph(id='error-plot', style={'height': '15vh'},
                           figure=go.Figure().update_layout(
                               xaxis=dict(title='Time [s]'),
-                              yaxis=dict(title='Relative Error [%]'),
-                              margin=dict(l=50, r=20, t=20, b=40)
+                              yaxis=dict(title='Error [%]'),
+                              margin=dict(l=50, r=20, t=10, b=35)
                           ))
-            ], style={'padding': '3px'})
-        ], style={'flex': '1', 'padding': '5px', 'overflowY': 'auto'})
+            ], style={'padding': '2px'})
+        ], style={'flex': '1', 'padding': '3px', 'overflowY': 'auto'})
 
     ], style={'display': 'flex', 'height': 'calc(100vh - 50px)'})
 ], style={'fontFamily': 'Segoe UI, Arial, sans-serif', 'margin': '0', 'padding': '0'})
@@ -250,9 +250,9 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
     )
 
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=12)),
-        xaxis=dict(title='x [m]'),
-        yaxis=dict(title='y [m]'),
+        title=dict(text=title, x=0.5, font=dict(size=11)),
+        xaxis=dict(title='x [m]', constrain='domain'),
+        yaxis=dict(title='y [m]', scaleanchor='x', scaleratio=1),
         updatemenus=[{
             'type': 'buttons',
             'showactive': True,
