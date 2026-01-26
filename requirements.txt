@@ -4,7 +4,7 @@ scipy>=1.7.0
 torch>=2.0.0
 
 # Visualization
-plotly>=5.0.0
+plotly>=5.0.0  # Uses new colorbar API: title=dict(text=..., side=...)
 dash>=2.0.0
 
 # Training
