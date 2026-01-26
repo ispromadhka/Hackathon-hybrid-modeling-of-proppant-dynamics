@@ -1,31 +1,31 @@
 ## Запуск симуляций
 
-'''
+```
 import sys
 import os
 module_path = os.path.abspath('../')
 if module_path not in sys.path:
 sys.path.append(module_path)
 
-# Запустите скрипт напрямую - он сам:
+#Запустите скрипт напрямую - он сам:
 
-# - Создаст все папки
+#- Создаст все папки
 
-# - Проверит предыдущие результаты
+#- Проверит предыдущие результаты
 
-# - Запустит новые симуляции
+#- Запустит новые симуляции
 
-# - Сохранит данные
+#- Сохранит данные
 
-'''
+```
 
 ## Структура выходных данных
 
-'''
+```
 ├── simulation_data/ # Финальные поля концентраций (.npy)
 ├── simulation_timeseries/ # Временные ряды (.npz)
 └── simulation_results.csv # Метаданные и метрики всех симуляций
-'''
+```
 
 ## Параметры симуляций
 
@@ -49,7 +49,7 @@ dT: шаг по времени (2)
 
 # Использование результатов
 
-'''
+```
 import pandas as pd
 import numpy as np
 
@@ -62,13 +62,12 @@ df = pd.read_csv('simulation_results.csv')
 param_hash = df.iloc[0]['param_hash']
 matrix = np.load(df.iloc[0]['matrix_path']) # Финальный кадр
 ts_data = np.load(df.iloc[0]['timeseries_path']) # Временной ряд
-'''
+```
 
 ## Структура данных
 
 Для временных рядов:
-
-'''
+```
 Q_series = ts_data['Q'] # Форма: (кадры, 100, 100)
 times = ts_data['times'] # Временные метки
-'''
+```
