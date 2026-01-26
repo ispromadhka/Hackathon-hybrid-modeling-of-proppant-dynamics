@@ -55,8 +55,8 @@ def run_simulation(params):
     config = {
         'grid': {'Tmax': Tmax, 'Ny': Ny, 'Nx': Nx, 'L': L, 'H': H, 'dT': dT_val},
         'physics': {
-            'c0': np.zeros((Nx, Ny)),
-            'w': w0_val * np.ones((Nx, Ny)),
+            'c0': np.zeros((Ny, Nx)),
+            'w': w0_val * np.ones((Ny, Nx)),
             'beta': 2.5,
             'mu0': mu0_val,
             'cmax': 0.635,
@@ -89,17 +89,17 @@ def run_simulation(params):
         frame_interval = max(1, total_steps // 100)
         
         for i in range(0, total_steps, frame_interval):
-            if i < len(s.Q):
+            if i <= s.step:
                 time_series_data.append(s.Q[i].copy())
                 time_stamps.append(s.times[i])
         
         if total_steps > 0 and (total_steps - 1) % frame_interval != 0:
-            last_idx = min(total_steps - 1, len(s.Q) - 1)
+            last_idx = min(total_steps - 1, s.step)
             time_series_data.append(s.Q[last_idx].copy())
             time_stamps.append(s.times[last_idx])
     
     if len(time_series_data) == 0:
-        time_series_data.append(np.zeros((Nx, Ny)))
+        time_series_data.append(np.zeros((Ny, Nx)))
         time_stamps.append(0.0)
     
     return s, time_series_data, time_stamps
