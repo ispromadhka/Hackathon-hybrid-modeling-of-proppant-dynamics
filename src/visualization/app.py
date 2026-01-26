@@ -125,7 +125,7 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
                 zmin=c_min, zmax=c_max,
                 contours=dict(coloring='heatmap', showlines=False),
                 showscale=(i == 0),
-                colorbar=dict(title='c', titleside='right') if i == 0 else None
+                colorbar=dict(title=dict(text='c', side='right')) if i == 0 else None
             )],
             name=str(i)
         ))
@@ -139,7 +139,7 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
             colorscale='Viridis',
             zmin=c_min, zmax=c_max,
             contours=dict(coloring='heatmap', showlines=False),
-            colorbar=dict(title='c', titleside='right', thickness=15)
+            colorbar=dict(title=dict(text='c', side='right'), thickness=15)
         )],
         frames=frames
     )
