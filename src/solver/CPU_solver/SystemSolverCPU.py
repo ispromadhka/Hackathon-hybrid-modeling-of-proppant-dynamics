@@ -1,7 +1,10 @@
 # SystemSolverCPU.py
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm.notebook import tqdm
+try:
+    from tqdm.notebook import tqdm
+except:
+    from tqdm import tqdm
 from .PoissonCPU import PressureSolverCPU
 from .TransportCPU import TransportSolverCPU
 

@@ -1,5 +1,5 @@
 """
-Proppant Transport Simulator - Injection from left boundary.
+Proppant Transport Simulator - Full physics with CPU solver.
 """
 
 import dash
@@ -8,15 +8,13 @@ import plotly.graph_objects as go
 import numpy as np
 from pathlib import Path
 import time
+import warnings
+warnings.filterwarnings('ignore')
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.solver.proppant_transport import (
-    SimulationParams,
-    PhysicalParams,
-    ProppantTransportSolver,
-)
+from src.solver.solver_wrapper import ProppantSolver
 
 app = dash.Dash(__name__, title="Proppant Simulator")
 
@@ -34,27 +32,31 @@ app.layout = html.Div([
             dcc.Slider(id='c_inlet', min=0.1, max=0.5, value=0.35, step=0.05,
                       marks={0.1: '0.1', 0.25: '0.25', 0.4: '0.4', 0.5: '0.5'}),
 
-            html.Hr(),
-            html.H4("Flow", style={'color': '#2c3e50'}),
-
-            html.Label("Max Velocity [m/s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='U_max', min=0.2, max=1.5, value=0.8, step=0.1,
-                      marks={0.2: '0.2', 0.5: '0.5', 1.0: '1.0', 1.5: '1.5'}),
+            html.Label("Flow Rate Q [m²/s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Slider(id='Q_inlet', min=0.02, max=0.1, value=0.05, step=0.01,
+                      marks={0.02: '0.02', 0.05: '0.05', 0.1: '0.1'}),
 
             html.Hr(),
             html.H4("Physics", style={'color': '#2c3e50'}),
 
             html.Label("Gravity [m/s²]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='gravity', min=0, max=15, value=9.81, step=0.5,
+            dcc.Slider(id='gravity', min=0, max=15, value=9.81, step=1,
                       marks={0: '0', 5: '5', 10: '10', 15: '15'}),
 
-            html.Label("Viscosity [mPa·s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='viscosity', min=5, max=100, value=10, step=5,
-                      marks={5: '5', 25: '25', 50: '50', 100: '100'}),
+            html.Label("Viscosity μ₀ [mPa·s]", style={'fontWeight': 'bold'}),
+            dcc.Slider(id='viscosity', min=1, max=50, value=1, step=1,
+                      marks={1: '1', 10: '10', 25: '25', 50: '50'}),
 
-            html.Label("Particle Diameter [μm]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='d_p', min=200, max=800, value=400, step=50,
-                      marks={200: '200', 400: '400', 600: '600', 800: '800'}),
+            html.Label("Particle Radius [μm]", style={'fontWeight': 'bold'}),
+            dcc.Slider(id='r_particle', min=100, max=500, value=200, step=50,
+                      marks={100: '100', 200: '200', 300: '300', 500: '500'}),
+
+            html.Hr(),
+            html.H4("Simulation", style={'color': '#2c3e50'}),
+
+            html.Label("Time [s]", style={'fontWeight': 'bold'}),
+            dcc.Slider(id='sim_time', min=20, max=200, value=80, step=20,
+                      marks={20: '20', 50: '50', 100: '100', 200: '200'}),
 
             html.Br(),
             html.Button('RUN SIMULATION', id='run-btn', n_clicks=0,
@@ -67,7 +69,7 @@ app.layout = html.Div([
                                         'backgroundColor': '#ecf0f1', 'borderRadius': '5px',
                                         'fontSize': '14px'})
 
-        ], style={'width': '300px', 'padding': '20px', 'backgroundColor': '#f8f9fa',
+        ], style={'width': '320px', 'padding': '20px', 'backgroundColor': '#f8f9fa',
                   'borderRight': '2px solid #ddd', 'overflowY': 'auto'}),
 
         # Plot area
@@ -82,48 +84,43 @@ app.layout = html.Div([
 @callback(
     [Output('plot', 'figure'), Output('info', 'children')],
     Input('run-btn', 'n_clicks'),
-    [State('c_inlet', 'value'), State('U_max', 'value'),
-     State('gravity', 'value'), State('viscosity', 'value'), State('d_p', 'value')],
+    [State('c_inlet', 'value'), State('Q_inlet', 'value'),
+     State('gravity', 'value'), State('viscosity', 'value'),
+     State('r_particle', 'value'), State('sim_time', 'value')],
     prevent_initial_call=True
 )
-def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
-    # Physical parameters
-    phys = PhysicalParams(
-        g=gravity,
-        mu_f=viscosity * 0.001,  # mPa·s to Pa·s
-        U_max=U_max,
-        d_p=d_p * 1e-6  # μm to m
-    )
-
-    # Simulation parameters
-    sim = SimulationParams(
-        nx=120, ny=60,
-        T=2.5, dt=0.002,
-        save_every=20,
-        c_inlet=c_inlet
-    )
-
-    solver = ProppantTransportSolver(sim, phys)
-
-    # Solve (empty initial condition, inject from left)
+def run_sim(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, sim_time):
+    # Create solver
     t0 = time.perf_counter()
+
+    solver = ProppantSolver(
+        nx=60, ny=30,
+        Lx=60.0, Ly=30.0,
+        T=sim_time, dT=sim_time / 20,
+        c_inlet=c_inlet,
+        Q_inlet=Q_inlet,
+        g=gravity,
+        mu0=viscosity * 0.001,  # mPa·s to Pa·s
+        r_particle=r_particle * 1e-6,  # μm to m
+    )
+
     times, traj = solver.solve()
     elapsed = (time.perf_counter() - t0) * 1000
 
-    # Color scale limits
-    c_min, c_max = 0, min(0.7, traj.max() * 1.1)
+    # Color scale
+    c_max = min(0.65, np.nanmax(traj) * 1.1)
+    c_max = max(c_max, 0.1)
 
     # Build frames
     frames = []
     for i in range(len(times)):
         frames.append(go.Frame(
-            data=[go.Contour(
-                z=traj[i].T,
+            data=[go.Heatmap(
+                z=np.clip(traj[i], 0, 0.65),
                 x=solver.x,
                 y=solver.y,
                 colorscale='Viridis',
-                zmin=c_min, zmax=c_max,
-                contours=dict(coloring='heatmap', showlines=False),
+                zmin=0, zmax=c_max,
                 showscale=(i == 0),
                 colorbar=dict(title='c', titleside='right') if i == 0 else None
             )],
@@ -132,13 +129,12 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
 
     # Initial figure
     fig = go.Figure(
-        data=[go.Contour(
-            z=traj[0].T,
+        data=[go.Heatmap(
+            z=np.clip(traj[0], 0, 0.65),
             x=solver.x,
             y=solver.y,
             colorscale='Viridis',
-            zmin=c_min, zmax=c_max,
-            contours=dict(coloring='heatmap', showlines=False),
+            zmin=0, zmax=c_max,
             colorbar=dict(title='c', titleside='right', thickness=15)
         )],
         frames=frames
@@ -147,23 +143,23 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
     # Layout
     fig.update_layout(
         title=dict(
-            text=f"Proppant Injection | c₀={c_inlet} | g={gravity} m/s² | μ={viscosity} mPa·s",
+            text=f"Proppant Transport | c₀={c_inlet} | g={gravity} m/s² | μ={viscosity} mPa·s",
             x=0.5, font=dict(size=16)
         ),
-        xaxis=dict(range=[0, 2], title='x [m]', dtick=0.5),
-        yaxis=dict(range=[0, 1], title='y [m]', scaleanchor='x', scaleratio=0.5, dtick=0.2),
+        xaxis=dict(title='x [m]', scaleanchor='y'),
+        yaxis=dict(title='y [m]'),
         updatemenus=[{
             'type': 'buttons',
             'showactive': True,
-            'y': 1.15, 'x': 0.5, 'xanchor': 'center',
+            'y': 1.12, 'x': 0.5, 'xanchor': 'center',
             'buttons': [
                 {
                     'label': '▶ Play',
                     'method': 'animate',
                     'args': [None, {
-                        'frame': {'duration': 50, 'redraw': True},
+                        'frame': {'duration': 100, 'redraw': True},
                         'fromcurrent': True,
-                        'transition': {'duration': 20}
+                        'transition': {'duration': 50}
                     }]
                 },
                 {
@@ -180,7 +176,7 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
         }],
         sliders=[{
             'active': 0,
-            'pad': {'t': 60, 'b': 10},
+            'pad': {'t': 50, 'b': 10},
             'len': 0.9, 'x': 0.05, 'y': 0,
             'currentvalue': {
                 'prefix': 't = ',
@@ -192,7 +188,7 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
             'steps': [
                 {
                     'args': [[str(i)], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate'}],
-                    'label': f'{times[i]:.2f}',
+                    'label': f'{times[i]:.1f}',
                     'method': 'animate'
                 }
                 for i in range(len(times))
@@ -202,11 +198,11 @@ def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
     )
 
     info_content = [
-        html.Span(f"✓ Computed in {elapsed:.0f} ms", style={'color': '#27ae60', 'fontWeight': 'bold'}),
+        html.Span(f"Computed in {elapsed/1000:.1f} s", style={'color': '#27ae60', 'fontWeight': 'bold'}),
         html.Br(),
-        html.Span(f"{len(times)} frames | {sim.nx}×{sim.ny} grid"),
+        html.Span(f"{len(times)} frames | {solver.nx}x{solver.ny} grid"),
         html.Br(),
-        html.Span(f"c_max = {traj.max():.3f}")
+        html.Span(f"c_max = {np.nanmax(traj):.3f}")
     ]
 
     return fig, info_content

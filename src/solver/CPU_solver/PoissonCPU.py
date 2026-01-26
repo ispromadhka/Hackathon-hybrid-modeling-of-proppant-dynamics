@@ -184,7 +184,7 @@ class PressureSolverCPU:
         self._abs_residual = float(r_norm)
         self._rel_residual = self._abs_residual/rhs_norm
         
-        if self._final_residual >= self.eps: 
+        if self._rel_residual >= self.eps:
             print("WARNING: CG didnt converge")
         
         return x_j.reshape(self.Ny, self.Nx)
