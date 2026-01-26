@@ -43,10 +43,14 @@ class ProppantSolver:
         # Flow
         Q_inlet: float = 0.05,
         inlet_fraction: float = 1/3,
+        # Injection pattern (None = continuous)
+        c_in_times: np.ndarray = None,
+        c_in_arr: np.ndarray = None,
         # Numerics
         cfl: float = 0.8,
         rk_stages: int = 2,
         use_weno: bool = False,
+        lim_type: str = 'koren',
     ):
         """
         Initialize proppant transport solver.
@@ -81,12 +85,18 @@ class ProppantSolver:
             Total inlet flow rate [m²/s]
         inlet_fraction : float
             Fraction of height for inlet
+        c_in_times : np.ndarray, optional
+            Times at which inlet concentration changes (for pulsed injection)
+        c_in_arr : np.ndarray, optional
+            Concentration values for each time interval
         cfl : float
             CFL number
         rk_stages : int
             Runge-Kutta stages (1, 2, or 3)
         use_weno : bool
             Use WENO5 (True) or TVD (False)
+        lim_type : str
+            TVD limiter type: 'koren', 'superbee', 'minmod', 'vanleer'
         """
         self.nx = nx
         self.ny = ny
@@ -131,7 +141,7 @@ class ProppantSolver:
             'numerics': {
                 'CFL': cfl,
                 'rk_stages': rk_stages,
-                'lim_type': 'koren',
+                'lim_type': lim_type,
                 'kappa': -1,
                 'WENO_type': 'Z',
                 'use_WENO': use_weno,
@@ -144,8 +154,8 @@ class ProppantSolver:
             'boundary_conditions': {
                 'q_in': q_in,
                 'q_out': q_out,
-                'c_in_times': np.array([T * 100]),  # Always inject
-                'c_in_arr': np.array([c_inlet, 0.0]),
+                'c_in_times': c_in_times if c_in_times is not None else np.array([T * 100]),
+                'c_in_arr': c_in_arr if c_in_arr is not None else np.array([c_inlet, 0.0]),
             }
         }
 
@@ -156,6 +166,9 @@ class ProppantSolver:
             'g': g,
             'r_particle': r_particle,
             'Q_inlet': Q_inlet,
+            'inlet_fraction': inlet_fraction,
+            'rk_stages': rk_stages,
+            'lim_type': lim_type,
         }
 
         # Initialize solver
