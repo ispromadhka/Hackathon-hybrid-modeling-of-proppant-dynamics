@@ -17,8 +17,8 @@ python app.py
 ## Commands
 
 ```bash
-# Generate training data (500 samples)
-python app.py --generate --samples 500
+# Generate training data (100 samples)
+python app.py --generate --samples 100
 
 # Train FNO model (100 epochs)
 python app.py --train --epochs 100
@@ -29,40 +29,53 @@ python app.py --port 8050
 
 ## Physics
 
-Two-phase proppant transport in a fracture:
+Full two-phase proppant transport model:
 
 ```
-∂c/∂t + ∇·(c·Vₚ) = 0              — mass conservation
-Vf = Poiseuille profile            — slot flow (parabolic velocity)
-Vₚ = Vf + Vslip(c)                 — proppant velocity
-Vslip = -V_stokes·(1-c/c_max)^n    — Richardson-Zaki settling
+∂(cw)/∂t + ∇·(cwVₚ) = 0              — mass conservation
+Vf = -w²/(12μ(c)) · (∇P - ρ(c)g)     — Darcy's law
+Vₚ = Vf + Vslip(c)                    — proppant velocity
+∇·(Vf + c·Vslip) = 0                  — incompressibility
 ```
 
-**Features:**
-- Continuous proppant injection at inlet (x=0)
-- Poiseuille flow profile: u(y) = U_max·4y(1-y)
-- Gravity settling with hindered settling correction
-- Nolte viscosity model for slurry
-- Impermeable walls (top/bottom)
+**Closure models:**
+- `μ(c) = μ₀(1 - c/c_max)^(-β)` — Krieger-Dougherty viscosity
+- `ρ(c) = ρ_f(1-c) + ρ_p·c` — mixture density
+- `Vslip = V_stokes·(1 - c/c_max)^n` — Richardson-Zaki hindered settling
 
-**Parameters:**
-- `c` — proppant volume concentration
-- `μ(c)` — concentration-dependent viscosity (Nolte model)
-- `Vslip` — settling velocity (Richardson-Zaki)
-- `d_p` — particle diameter (200-800 μm)
+**Numerical methods:**
+- Pressure: Sparse direct solver / Conjugate Gradient
+- Transport: TVD/WENO5 reconstruction + RK3 time integration
+- CFL-adaptive time stepping
+
+## Parameters
+
+- `c` — proppant volume concentration [0, 0.635]
+- `w` — fracture aperture [m]
+- `μ₀` — base fluid viscosity [Pa·s]
+- `β` — viscosity exponent (2.5)
+- `ρ_f`, `ρ_p` — fluid/proppant densities [kg/m³]
+- `g` — gravity [m/s²]
+- `r` — particle radius [m]
 
 ## Project Structure
 
 ```
 ├── app.py                 # Main entry point (CLI)
 ├── src/
-│   ├── solver/            # Numerical solvers
-│   │   └── proppant_transport.py
+│   ├── solver/
+│   │   ├── CPU_solver/    # Full physics solver
+│   │   │   ├── SystemSolverCPU.py
+│   │   │   ├── PoissonCPU.py
+│   │   │   ├── TransportCPU.py
+│   │   │   ├── TVD_CPU.py
+│   │   │   └── WENO5CPU.py
+│   │   └── solver_wrapper.py
 │   ├── model/             # FNO neural network
 │   │   └── fno.py
 │   ├── training/          # Training pipeline
-│   │   ├── dataset.py     # Data generation
-│   │   └── train.py       # Training loop
+│   │   ├── dataset.py
+│   │   └── train.py
 │   └── visualization/     # Web interface
 │       └── app.py
 ├── data/                  # Training data
@@ -72,36 +85,32 @@ Vslip = -V_stokes·(1-c/c_max)^n    — Richardson-Zaki settling
 
 ## Web Interface
 
-Interactive simulator with adjustable parameters:
-
-- **Inlet concentration** (c₀) — proppant concentration at inlet
-- **Flow velocity** (U_max) — maximum Poiseuille velocity
-- **Gravity** (g) — gravitational acceleration
-- **Viscosity** (μ) — fluid viscosity
-- **Particle diameter** (d_p) — affects settling rate
-
-Real-time visualization with Play/Pause animation controls.
+Interactive simulator:
+- **c₀** — inlet proppant concentration
+- **Q** — flow rate [m²/s]
+- **g** — gravity [m/s²]
+- **μ₀** — fluid viscosity [mPa·s]
+- **r** — particle radius [μm]
+- **T** — simulation time [s]
 
 ## FNO Model
 
-Fourier Neural Operator architecture:
-- Input: Physics parameters [c_inlet, U_max, g, μ, d_p]
-- Output: Full trajectory c(x,y,t) for all time steps
+Fourier Neural Operator:
+- Input: Physics parameters [c_inlet, Q, g, μ, r]
+- Output: Full trajectory c(x,y,t)
 - ~1.8M parameters
-- Trained with relative L2 loss
+- Relative L2 loss
 
 ## Training
 
 ```bash
-# Generate dataset with varied physics parameters
+# Generate dataset
 python app.py --generate --samples 500
 
 # Train model (GPU recommended)
 python app.py --train --epochs 100
 ```
 
-Checkpoints saved to `checkpoints/best.pt`.
-
 ## Goal
 
-Replace slow numerical solver (~100ms per simulation) with FNO for ~10-100x speedup while maintaining accuracy.
+Replace numerical solver (~5-10s per simulation) with FNO for 100-1000x speedup.

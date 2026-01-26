@@ -1,24 +1,22 @@
 """
 Dataset generation and loading for FNO training.
-Uses the proppant transport solver with inlet injection.
+Uses the full CPU_solver with proper physics.
 """
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
 import json
 from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.solver.proppant_transport import (
-    SimulationParams,
-    PhysicalParams,
-    ProppantTransportSolver,
-)
+from src.solver.solver_wrapper import ProppantSolver
 
 
 class ProppantDataset(Dataset):
@@ -35,24 +33,21 @@ class ProppantDataset(Dataset):
 
         with np.load(self.files[0]) as data:
             self.n_times = data['concentrations'].shape[0]
-            self.nx = data['concentrations'].shape[1]
-            self.ny = data['concentrations'].shape[2]
+            self.ny = data['concentrations'].shape[1]
+            self.nx = data['concentrations'].shape[2]
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> dict:
         with np.load(self.files[idx]) as data:
-            c0 = data['concentrations'][0]
             trajectory = data['concentrations']
-            params = data['params']  # [c_inlet, U_max, g, mu_f, d_p]
+            params = data['params']
 
-        c0 = torch.from_numpy(c0).float()
         trajectory = torch.from_numpy(trajectory).float()
         params = torch.from_numpy(params).float()
 
         sample = {
-            'c0': c0,
             'trajectory': trajectory,
             'params': params,
         }
@@ -63,27 +58,45 @@ class ProppantDataset(Dataset):
         return sample
 
 
-def generate_training_sample(sim_params: SimulationParams, phys_params: PhysicalParams) -> dict:
+def generate_training_sample(
+    c_inlet: float,
+    Q_inlet: float,
+    g: float,
+    mu0: float,
+    r_particle: float,
+    nx: int = 50,
+    ny: int = 25,
+    T: float = 80.0,
+    dT: float = 4.0,
+) -> dict:
     """Generate a single training sample."""
-    solver = ProppantTransportSolver(sim_params, phys_params)
+
+    solver = ProppantSolver(
+        nx=nx, ny=ny,
+        Lx=60.0, Ly=30.0,
+        T=T, dT=dT,
+        c_inlet=c_inlet,
+        Q_inlet=Q_inlet,
+        g=g,
+        mu0=mu0,
+        r_particle=r_particle,
+    )
+
     times, concentrations = solver.solve()
 
+    # Clip to valid range
+    concentrations = np.clip(concentrations, 0, 0.635)
+
     return {
-        'concentrations': concentrations,
-        'times': times,
-        'params': np.array([
-            sim_params.c_inlet,
-            phys_params.U_max,
-            phys_params.g,
-            phys_params.mu_f,
-            phys_params.d_p
-        ], dtype=np.float32)
+        'concentrations': concentrations.astype(np.float32),
+        'times': times.astype(np.float32),
+        'params': np.array([c_inlet, Q_inlet, g, mu0, r_particle], dtype=np.float32)
     }
 
 
 def generate_dataset(
     output_dir: Path,
-    n_samples: int = 500,
+    n_samples: int = 100,
     seed: int = 42
 ):
     """
@@ -94,20 +107,18 @@ def generate_dataset(
 
     np.random.seed(seed)
 
-    # Fixed simulation grid
-    nx, ny = 64, 32
-    T, dt = 2.0, 0.004
-    save_every = 20
+    # Grid parameters
+    nx, ny = 50, 25
+    T, dT = 80.0, 4.0
 
     metadata = {
         'n_samples': n_samples,
         'nx': nx,
         'ny': ny,
-        'Lx': 2.0,
-        'Ly': 1.0,
+        'Lx': 60.0,
+        'Ly': 30.0,
         'T': T,
-        'dt': dt,
-        'save_every': save_every,
+        'dT': dT,
     }
 
     with open(output_dir / 'metadata.json', 'w') as f:
@@ -115,41 +126,38 @@ def generate_dataset(
 
     for i in tqdm(range(n_samples), desc="Generating samples"):
         # Randomize physical parameters
-        c_inlet = np.random.uniform(0.15, 0.45)
-        U_max = np.random.uniform(0.4, 1.2)
-        g = np.random.uniform(5.0, 15.0)
-        mu_f = np.random.uniform(0.005, 0.05)  # 5-50 mPa·s
-        d_p = np.random.uniform(0.0002, 0.0008)  # 200-800 μm
+        c_inlet = np.random.uniform(0.2, 0.5)
+        Q_inlet = np.random.uniform(0.03, 0.08)
+        g = np.random.uniform(0, 12)
+        mu0 = np.random.uniform(0.0005, 0.005)
+        r_particle = np.random.uniform(0.0001, 0.0004)
 
-        sim_params = SimulationParams(
-            nx=nx, ny=ny,
-            T=T, dt=dt,
-            save_every=save_every,
-            c_inlet=c_inlet
-        )
+        try:
+            sample = generate_training_sample(
+                c_inlet=c_inlet,
+                Q_inlet=Q_inlet,
+                g=g,
+                mu0=mu0,
+                r_particle=r_particle,
+                nx=nx, ny=ny, T=T, dT=dT
+            )
 
-        phys_params = PhysicalParams(
-            g=g,
-            mu_f=mu_f,
-            U_max=U_max,
-            d_p=d_p
-        )
-
-        sample = generate_training_sample(sim_params, phys_params)
-
-        np.savez_compressed(
-            output_dir / f'sample_{i:05d}.npz',
-            concentrations=sample['concentrations'].astype(np.float32),
-            times=sample['times'].astype(np.float32),
-            params=sample['params']
-        )
+            np.savez_compressed(
+                output_dir / f'sample_{i:05d}.npz',
+                concentrations=sample['concentrations'],
+                times=sample['times'],
+                params=sample['params']
+            )
+        except Exception as e:
+            print(f"Sample {i} failed: {e}")
+            continue
 
     print(f"Generated {n_samples} samples in {output_dir}")
 
 
 def create_dataloaders(
     data_dir: Path,
-    batch_size: int = 16,
+    batch_size: int = 8,
     train_ratio: float = 0.8,
     num_workers: int = 0
 ) -> Tuple[DataLoader, DataLoader]:
@@ -184,12 +192,11 @@ def create_dataloaders(
 
 if __name__ == '__main__':
     output_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
-    generate_dataset(output_dir, n_samples=10)
+    generate_dataset(output_dir, n_samples=5)
 
     dataset = ProppantDataset(output_dir)
     print(f"Dataset size: {len(dataset)}")
 
     sample = dataset[0]
-    print(f"c0 shape: {sample['c0'].shape}")
-    print(f"trajectory shape: {sample['trajectory'].shape}")
-    print(f"params: {sample['params']}")
+    print(f"Trajectory shape: {sample['trajectory'].shape}")
+    print(f"Params: {sample['params']}")
