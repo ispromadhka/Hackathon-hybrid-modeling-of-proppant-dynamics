@@ -42,6 +42,7 @@ simulation_results.csv
 .simulation_gifs/*
 .simulation_data/*
 .simulation_timeseries/*
+.torch_data/
 
 #test files
 .src/solver/t.ipynb
