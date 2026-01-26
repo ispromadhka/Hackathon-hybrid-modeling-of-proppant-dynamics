@@ -107,35 +107,57 @@ def run_sim(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, sim_time):
     times, traj = solver.solve()
     elapsed = (time.perf_counter() - t0) * 1000
 
+    # Mass conservation check
+    dx = solver.Lx / solver.nx
+    dy = solver.Ly / solver.ny
+    w0 = solver.w0
+
+    # Total mass at each time step: integral of c * w * dx * dy
+    mass = np.array([np.sum(traj[i] * w0 * dx * dy) for i in range(len(times))])
+
+    # Injected mass (approximate): Q * c_inlet * w0 * t
+    injected_mass = Q_inlet * c_inlet * w0 * times
+
+    # Mass balance: mass_in_domain / injected_mass (should be ~1 if no outflow)
+    mass_ratio = mass[-1] / (injected_mass[-1] + 1e-10) if injected_mass[-1] > 0 else 0
+
     # Color scale
     c_max = min(0.65, np.nanmax(traj) * 1.1)
     c_max = max(c_max, 0.1)
 
-    # Build frames
+    # Convert to percentage for display
+    traj_pct = traj * 100  # concentration in %
+    c_max_pct = c_max * 100
+
+    # Build frames with Contour (smooth)
     frames = []
     for i in range(len(times)):
         frames.append(go.Frame(
-            data=[go.Heatmap(
-                z=np.clip(traj[i], 0, 0.65),
+            data=[go.Contour(
+                z=np.clip(traj_pct[i], 0, 65),
                 x=solver.x,
                 y=solver.y,
-                colorscale='Viridis',
-                zmin=0, zmax=c_max,
+                colorscale='Turbo',
+                zmin=0, zmax=c_max_pct,
+                contours=dict(coloring='heatmap', showlines=False),
+                ncontours=50,
                 showscale=(i == 0),
-                colorbar=dict(title=dict(text='c', side='right')) if i == 0 else None
+                colorbar=dict(title=dict(text='c [%]', side='right')) if i == 0 else None
             )],
             name=str(i)
         ))
 
-    # Initial figure
+    # Initial figure with Contour
     fig = go.Figure(
-        data=[go.Heatmap(
-            z=np.clip(traj[0], 0, 0.65),
+        data=[go.Contour(
+            z=np.clip(traj_pct[0], 0, 65),
             x=solver.x,
             y=solver.y,
-            colorscale='Viridis',
-            zmin=0, zmax=c_max,
-            colorbar=dict(title=dict(text='c', side='right'), thickness=15)
+            colorscale='Turbo',
+            zmin=0, zmax=c_max_pct,
+            contours=dict(coloring='heatmap', showlines=False),
+            ncontours=50,
+            colorbar=dict(title=dict(text='c [%]', side='right'), thickness=15)
         )],
         frames=frames
     )
@@ -197,12 +219,25 @@ def run_sim(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, sim_time):
         margin=dict(l=60, r=30, t=80, b=80)
     )
 
+    # Mass conservation status
+    mass_status_color = '#27ae60' if 0.8 < mass_ratio < 1.2 else '#e74c3c'
+    mass_status = "OK" if 0.8 < mass_ratio < 1.2 else "CHECK"
+
     info_content = [
         html.Span(f"Computed in {elapsed/1000:.1f} s", style={'color': '#27ae60', 'fontWeight': 'bold'}),
         html.Br(),
         html.Span(f"{len(times)} frames | {solver.nx}x{solver.ny} grid"),
         html.Br(),
-        html.Span(f"c_max = {np.nanmax(traj):.3f}")
+        html.Span(f"c_max = {np.nanmax(traj):.3f}"),
+        html.Hr(style={'margin': '8px 0'}),
+        html.Span("Mass Conservation:", style={'fontWeight': 'bold'}),
+        html.Br(),
+        html.Span(f"In domain: {mass[-1]:.4f} kg"),
+        html.Br(),
+        html.Span(f"Injected: {injected_mass[-1]:.4f} kg"),
+        html.Br(),
+        html.Span(f"Ratio: {mass_ratio:.2%} ", style={'color': mass_status_color, 'fontWeight': 'bold'}),
+        html.Span(f"[{mass_status}]", style={'color': mass_status_color}),
     ]
 
     return fig, info_content
