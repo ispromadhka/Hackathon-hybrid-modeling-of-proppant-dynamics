@@ -67,7 +67,6 @@ class Trainer:
 
         # Relative L2 loss (better for PDEs than MSE)
         self.criterion = RelativeLpLoss(p=2)
-        self.mse = nn.MSELoss()
 
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
@@ -104,10 +103,9 @@ class Trainer:
         return total_loss / len(self.train_loader)
 
     @torch.no_grad()
-    def validate(self) -> dict:
+    def validate(self) -> float:
         self.model.eval()
         total_loss = 0.0
-        total_mse = 0.0
 
         for batch in self.val_loader:
             params = batch['params'].to(self.device)
@@ -119,10 +117,8 @@ class Trainer:
             target = trajectory[:, :n_times, :, :]
 
             total_loss += self.criterion(pred, target).item()
-            total_mse += self.mse(pred, target).item()
 
-        n = len(self.val_loader)
-        return {'rel_l2': total_loss / n, 'mse': total_mse / n}
+        return total_loss / len(self.val_loader)
 
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         if not self.checkpoint_dir:
@@ -162,11 +158,11 @@ class Trainer:
                 self.scheduler.step()
 
             train_loss = self.train_epoch()
-            val_metrics = self.validate()
+            val_loss = self.validate()
 
-            is_best = val_metrics['rel_l2'] < self.best_val_loss
+            is_best = val_loss < self.best_val_loss
             if is_best:
-                self.best_val_loss = val_metrics['rel_l2']
+                self.best_val_loss = val_loss
 
             self.save_checkpoint(epoch, is_best)
 
@@ -176,8 +172,7 @@ class Trainer:
             print(
                 f"Epoch {epoch:3d} | "
                 f"Train: {train_loss:.4e} | "
-                f"Val: {val_metrics['rel_l2']:.4e} | "
-                f"MSE: {val_metrics['mse']:.4e} | "
+                f"Val: {val_loss:.4e} | "
                 f"LR: {lr:.2e} | "
                 f"Time: {elapsed:.1f}s"
                 + (" *" if is_best else "")
