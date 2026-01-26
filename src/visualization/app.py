@@ -21,6 +21,28 @@ from src.model.fno import create_model
 
 app = dash.Dash(__name__, title="Proppant Simulator - NN vs NS")
 
+# Domain size constants
+DOMAIN_LX = 60.0
+DOMAIN_LY = 30.0
+
+def create_empty_figure(title="", show_message=None):
+    """Create empty placeholder figure with correct axis range."""
+    fig = go.Figure()
+    if show_message:
+        fig.add_annotation(
+            text=show_message,
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color='#7f8c8d')
+        )
+    fig.update_layout(
+        title=dict(text=title, x=0.5, font=dict(size=12)),
+        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX]),
+        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY]),
+        margin=dict(l=50, r=20, t=60, b=60)
+    )
+    return fig
+
 # Try to load trained model
 MODEL = None
 MODEL_METADATA = None
@@ -41,18 +63,43 @@ def load_model():
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-            # Create model with same architecture as training
-            nx = MODEL_METADATA.get('nx', 60) if MODEL_METADATA else 60
-            ny = MODEL_METADATA.get('ny', 30) if MODEL_METADATA else 30
-            n_times = 21  # Default
+            # Detect model architecture from checkpoint
+            state_dict = checkpoint['model_state_dict']
 
-            MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=9, device=device)
-            MODEL.load_state_dict(checkpoint['model_state_dict'])
+            # Get grid size from grid_x buffer
+            if 'grid_x' in state_dict:
+                grid_shape = state_dict['grid_x'].shape
+                nx = grid_shape[2]
+                ny = grid_shape[3]
+            else:
+                nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
+                ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
+
+            # Get n_params from lift layer (in_channels = n_params + 2)
+            if 'lift.weight' in state_dict:
+                in_channels = state_dict['lift.weight'].shape[1]
+                n_params = in_channels - 2  # subtract 2 for grid coordinates
+            else:
+                n_params = 5
+
+            # Get n_times from project layer
+            if 'project.2.weight' in state_dict:
+                n_times = state_dict['project.2.weight'].shape[0]
+            else:
+                n_times = 26
+
+            print(f"Detected model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+
+            MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device)
+            # Load with strict=False to handle buffer issues, then verify key parameters
+            MODEL.load_state_dict(checkpoint['model_state_dict'], strict=False)
             MODEL.eval()
             print(f"Loaded FNO model from {checkpoint_path}")
             return True
         except Exception as e:
             print(f"Failed to load model: {e}")
+            import traceback
+            traceback.print_exc()
             MODEL = None
     return False
 
@@ -107,41 +154,60 @@ app.layout = html.Div([
                               'border': 'none', 'borderRadius': '8px', 'cursor': 'pointer',
                               'fontWeight': 'bold', 'marginTop': '10px'}),
 
+            # Loading indicator
+            dcc.Loading(
+                id="loading",
+                type="default",
+                children=html.Div(id='loading-output', style={'height': '20px'}),
+                style={'marginTop': '10px'}
+            ),
+
             # Timing info
-            html.Div(id='timing-info', style={'marginTop': '15px', 'padding': '10px',
+            html.Div(id='timing-info', style={'marginTop': '10px', 'padding': '10px',
                                                'backgroundColor': '#ecf0f1', 'borderRadius': '5px'}),
 
         ], style={'width': '280px', 'padding': '15px', 'backgroundColor': '#f8f9fa',
                   'borderRight': '2px solid #ddd', 'overflowY': 'auto'}),
 
-        # Main content area
+        # Main content area - vertical layout (NN top, NS bottom)
         html.Div([
-            # Two plots side by side
+            # NN Plot (top)
             html.Div([
-                # NN Plot
                 html.Div([
                     html.H3("Neural Network (FNO)",
-                           style={'textAlign': 'center', 'color': '#3498db', 'margin': '5px'}),
-                    dcc.Graph(id='nn-plot', style={'height': '38vh'}),
-                    html.Div(id='nn-time', style={'textAlign': 'center', 'fontSize': '14px',
+                           style={'textAlign': 'center', 'color': '#3498db', 'margin': '0'}),
+                    html.Div(id='nn-time', style={'textAlign': 'center', 'fontSize': '12px',
                                                    'color': '#3498db', 'fontWeight': 'bold'})
-                ], style={'flex': '1', 'padding': '5px'}),
+                ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
+                          'padding': '0 20px'}),
+                dcc.Graph(id='nn-plot', style={'height': '32vh'},
+                          figure=create_empty_figure("FNO Prediction", "Click RUN to start")),
+            ], style={'padding': '3px'}),
 
-                # NS Plot
+            # NS Plot (bottom)
+            html.Div([
                 html.Div([
                     html.H3("Numerical Solver (NS)",
-                           style={'textAlign': 'center', 'color': '#e74c3c', 'margin': '5px'}),
-                    dcc.Graph(id='ns-plot', style={'height': '38vh'}),
-                    html.Div(id='ns-time', style={'textAlign': 'center', 'fontSize': '14px',
+                           style={'textAlign': 'center', 'color': '#e74c3c', 'margin': '0'}),
+                    html.Div(id='ns-time', style={'textAlign': 'center', 'fontSize': '12px',
                                                    'color': '#e74c3c', 'fontWeight': 'bold'})
-                ], style={'flex': '1', 'padding': '5px'})
-            ], style={'display': 'flex', 'flexDirection': 'row'}),
+                ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
+                          'padding': '0 20px'}),
+                dcc.Graph(id='ns-plot', style={'height': '32vh'},
+                          figure=create_empty_figure("Numerical Solver", "Click RUN to start")),
+            ], style={'padding': '3px'}),
 
             # Error plot
             html.Div([
-                html.H4("Comparison Metrics", style={'textAlign': 'center', 'margin': '5px'}),
-                dcc.Graph(id='error-plot', style={'height': '25vh'})
-            ], style={'padding': '5px'})
+                html.H4("Error: ||NN - NS||₂ / ||NS||₂", style={'textAlign': 'center', 'margin': '3px 0',
+                                                                 'fontSize': '14px'}),
+                dcc.Graph(id='error-plot', style={'height': '18vh'},
+                          figure=go.Figure().update_layout(
+                              xaxis=dict(title='Time [s]'),
+                              yaxis=dict(title='Relative Error [%]'),
+                              margin=dict(l=50, r=20, t=20, b=40)
+                          ))
+            ], style={'padding': '3px'})
         ], style={'flex': '1', 'padding': '5px', 'overflowY': 'auto'})
 
     ], style={'display': 'flex', 'height': 'calc(100vh - 50px)'})
@@ -185,12 +251,12 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
 
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=12)),
-        xaxis=dict(title='x [m]', scaleanchor='y'),
+        xaxis=dict(title='x [m]'),
         yaxis=dict(title='y [m]'),
         updatemenus=[{
             'type': 'buttons',
             'showactive': True,
-            'y': 1.15, 'x': 0.5, 'xanchor': 'center',
+            'y': 1.02, 'x': 1.0, 'xanchor': 'right',
             'buttons': [
                 {
                     'label': '▶',
@@ -210,8 +276,8 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
         }],
         sliders=[{
             'active': frame_idx,
-            'pad': {'t': 30, 'b': 10},
-            'len': 0.9, 'x': 0.05, 'y': 0,
+            'pad': {'t': 40, 'b': 10},
+            'len': 0.9, 'x': 0.05, 'y': -0.15,
             'currentvalue': {
                 'prefix': 't = ',
                 'suffix': ' s',
@@ -222,13 +288,13 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
             'steps': [
                 {
                     'args': [[str(i)], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate'}],
-                    'label': f'{times[i]:.1f}',
+                    'label': f'{times[i]:.0f}',
                     'method': 'animate'
                 }
                 for i in range(len(times))
             ]
         }],
-        margin=dict(l=50, r=20, t=60, b=60)
+        margin=dict(l=50, r=20, t=40, b=80)
     )
 
     return fig
@@ -236,7 +302,8 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
 
 @callback(
     [Output('nn-plot', 'figure'), Output('ns-plot', 'figure'), Output('error-plot', 'figure'),
-     Output('nn-time', 'children'), Output('ns-time', 'children'), Output('timing-info', 'children')],
+     Output('nn-time', 'children'), Output('ns-time', 'children'), Output('timing-info', 'children'),
+     Output('loading-output', 'children')],
     Input('run-btn', 'n_clicks'),
     [State('c_inlet', 'value'), State('Q_inlet', 'value'),
      State('gravity', 'value'), State('viscosity', 'value'),
@@ -284,24 +351,44 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     if nn_available:
         t0_nn = time.perf_counter()
 
-        # Prepare input parameters (normalized)
-        # [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]
-        params = torch.tensor([[
-            c_inlet,          # c_inlet
-            Q_inlet,          # Q_inlet
-            gravity / 15.0,   # g (normalized)
-            mu0 * 1000,       # mu0 (in mPa·s)
-            r_p * 1e6 / 500,  # r_particle (normalized)
-            0.1,              # inlet_fraction
-            2.0,              # rk_stages
-            0.5,              # lim_type (koren=0, superbee=1, minmod=2)
-            0.0,              # injection_mode (continuous=0, single_pulse=1, multi_pulse=2)
-        ]], dtype=torch.float32)
+        # Prepare input parameters based on model's expected n_params
+        n_params = MODEL.n_params
+
+        if n_params == 5:
+            # Old 5-param model: [c_inlet, Q_inlet(?), g, mu0, r_particle]
+            params = torch.tensor([[
+                c_inlet,
+                Q_inlet * 20,  # Scale to match training range
+                gravity,
+                mu0 * 100,     # Scale viscosity
+                r_p * 1000,    # Scale particle radius
+            ]], dtype=torch.float32)
+        else:
+            # New 9-param model
+            params = torch.tensor([[
+                c_inlet,
+                Q_inlet,
+                gravity / 15.0,
+                mu0 * 1000,
+                r_p * 1e6 / 500,
+                0.1,   # inlet_fraction
+                2.0,   # rk_stages
+                0.5,   # lim_type
+                0.0,   # injection_mode
+            ]], dtype=torch.float32)
 
         with torch.no_grad():
             pred = MODEL(params)
             # Output: (1, n_times, nx, ny) -> (n_times, ny, nx)
-            traj_nn = pred[0].cpu().numpy().transpose(0, 2, 1)
+            traj_nn_raw = pred[0].cpu().numpy().transpose(0, 2, 1)
+
+            # Interpolate to match NS grid if sizes differ
+            from scipy.ndimage import zoom
+            if traj_nn_raw.shape[1:] != (ny, nx):
+                zoom_factors = (1, ny / traj_nn_raw.shape[1], nx / traj_nn_raw.shape[2])
+                traj_nn = zoom(traj_nn_raw, zoom_factors, order=1)
+            else:
+                traj_nn = traj_nn_raw
 
         time_nn = (time.perf_counter() - t0_nn) * 1000  # ms
 
@@ -351,15 +438,8 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         avg_error = np.mean(errors)
         final_error = errors[-1] if errors else 0
     else:
-        # No NN model - show placeholder
-        fig_nn = go.Figure()
-        fig_nn.add_annotation(
-            text="No trained model found.<br>Run: python app.py --train",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=14, color='#e74c3c')
-        )
-        fig_nn.update_layout(margin=dict(l=50, r=20, t=60, b=60))
+        # No NN model - show placeholder with same axis range as NS
+        fig_nn = create_empty_figure("FNO Prediction", "No trained model.<br>Run: python app.py --train")
 
         fig_error = go.Figure()
         fig_error.add_annotation(
@@ -367,7 +447,11 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
             xref="paper", yref="paper",
             x=0.5, y=0.5, showarrow=False
         )
-        fig_error.update_layout(margin=dict(l=50, r=20, t=40, b=40))
+        fig_error.update_layout(
+            xaxis=dict(title='Time [s]'),
+            yaxis=dict(title='Relative Error [%]'),
+            margin=dict(l=50, r=20, t=40, b=40)
+        )
         avg_error = 0
         final_error = 0
 
@@ -392,16 +476,36 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     ]
 
     if nn_available:
+        # Format error nicely
+        if avg_error > 100:
+            error_color = '#e74c3c'
+            error_note = " (model mismatch!)"
+        elif avg_error > 20:
+            error_color = '#f39c12'
+            error_note = ""
+        else:
+            error_color = '#27ae60'
+            error_note = ""
+
         timing_content.extend([
             html.Hr(style={'margin': '8px 0'}),
-            html.B("Quality:"),
+            html.B("Quality (Rel. L2):"),
             html.Br(),
-            html.Span(f"Avg Error: {avg_error:.2f}%"),
+            html.Span(f"Avg: {min(avg_error, 999.9):.1f}%{error_note}",
+                     style={'color': error_color}),
             html.Br(),
-            html.Span(f"Final Error: {final_error:.2f}%"),
+            html.Span(f"Final: {min(final_error, 999.9):.1f}%",
+                     style={'color': error_color}),
         ])
 
-    return fig_nn, fig_ns, fig_error, nn_time_text, ns_time_text, timing_content
+        if avg_error > 100:
+            timing_content.extend([
+                html.Hr(style={'margin': '8px 0'}),
+                html.Span("Model trained on different data!",
+                         style={'color': '#e74c3c', 'fontSize': '11px'}),
+            ])
+
+    return fig_nn, fig_ns, fig_error, nn_time_text, ns_time_text, timing_content, ""
 
 
 def run_app(debug=True, port=8050):

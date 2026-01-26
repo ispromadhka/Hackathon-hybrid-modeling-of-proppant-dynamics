@@ -114,12 +114,12 @@ class FNOProppant(nn.Module):
             nn.Sigmoid()  # Concentration in [0, 1]
         )
 
-        # Coordinate grids
+        # Coordinate grids (use contiguous tensors for proper state_dict loading)
         x = torch.linspace(0, 1, nx)
         y = torch.linspace(0, 1, ny)
         X, Y = torch.meshgrid(x, y, indexing='ij')
-        self.register_buffer('grid_x', X.unsqueeze(0).unsqueeze(0))
-        self.register_buffer('grid_y', Y.unsqueeze(0).unsqueeze(0))
+        self.register_buffer('grid_x', X.unsqueeze(0).unsqueeze(0).contiguous())
+        self.register_buffer('grid_y', Y.unsqueeze(0).unsqueeze(0).contiguous())
 
     def forward(self, params: torch.Tensor) -> torch.Tensor:
         """
