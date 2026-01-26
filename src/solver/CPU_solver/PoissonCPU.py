@@ -184,16 +184,16 @@ class PressureSolverCPU:
         self._abs_residual = float(r_norm)
         self._rel_residual = self._abs_residual/rhs_norm
         
-        if self._final_residual >= self.eps: 
+        if self._abs_residual >= self.eps: 
             print("WARNING: CG didnt converge")
         
         return x_j.reshape(self.Ny, self.Nx)
     
     
     def _solve_sparse(self, 
-                       rhs_matrix: np.ndarray, 
-                       p0: np.ndarray,
-                       check_interval: int = 10) -> np.ndarray:
+                    rhs_matrix: np.ndarray, 
+                    p0: np.ndarray,
+                    check_interval: int = 10) -> np.ndarray:
         """Computes pressure field for given mobility and sources matrix using scipy  solver\n
         Parameters
         ----------

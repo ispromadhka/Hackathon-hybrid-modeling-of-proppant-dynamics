@@ -36,3 +36,13 @@ Thumbs.db
 
 # Reference frames (temporary)
 reference_frames/
+
+#generation data
+simulation_results.csv
+.simulation_gifs/
+.simulation_data/
+.simulation_timeseries/
+
+#test files
+.src/solver/t.ipynb
+./src/solver/t.py
