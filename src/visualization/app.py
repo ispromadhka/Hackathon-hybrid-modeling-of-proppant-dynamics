@@ -122,7 +122,7 @@ def run_sim(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, sim_time):
                 colorscale='Viridis',
                 zmin=0, zmax=c_max,
                 showscale=(i == 0),
-                colorbar=dict(title='c', titleside='right') if i == 0 else None
+                colorbar=dict(title=dict(text='c', side='right')) if i == 0 else None
             )],
             name=str(i)
         ))
@@ -135,7 +135,7 @@ def run_sim(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, sim_time):
             y=solver.y,
             colorscale='Viridis',
             zmin=0, zmax=c_max,
-            colorbar=dict(title='c', titleside='right', thickness=15)
+            colorbar=dict(title=dict(text='c', side='right'), thickness=15)
         )],
         frames=frames
     )
