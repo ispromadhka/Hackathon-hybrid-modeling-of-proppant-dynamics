@@ -1,7 +1,7 @@
 """
 Fourier Neural Operator (FNO) for proppant transport.
 
-Input: Physics parameters (c_inlet, U_max, g, mu_f, d_p)
+Input: Physics parameters [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]
 Output: Full trajectory c(x,y,t)
 """
 
@@ -90,7 +90,7 @@ class FNOProppant(nn.Module):
         modes2: int = 8,
         width: int = 48,
         n_layers: int = 4,
-        n_params: int = 5,  # [c_inlet, U_max, g, mu_f, d_p]
+        n_params: int = 9,  # [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]
     ):
         super().__init__()
         self.nx = nx
@@ -125,7 +125,7 @@ class FNOProppant(nn.Module):
         """
         Args:
             params: Physics parameters (batch, n_params)
-                    [c_inlet, U_max, g, mu_f, d_p]
+                    [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]
 
         Returns:
             trajectory: (batch, n_times, nx, ny)
@@ -159,6 +159,7 @@ def create_model(
     nx: int = 64,
     ny: int = 32,
     n_times: int = 26,
+    n_params: int = 9,
     device: str = 'cpu'
 ) -> FNOProppant:
     """Create FNO model for proppant transport."""
@@ -170,7 +171,7 @@ def create_model(
         modes2=min(8, ny // 4),
         width=48,
         n_layers=4,
-        n_params=5
+        n_params=n_params
     )
     return model.to(device)
 
@@ -179,14 +180,14 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Device: {device}")
 
-    model = create_model(nx=64, ny=32, n_times=26, device=device)
+    model = create_model(nx=64, ny=32, n_times=26, n_params=9, device=device)
 
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {n_params:,}")
+    n_params_count = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {n_params_count:,}")
 
     # Test forward
     batch_size = 4
-    params = torch.rand(batch_size, 5, device=device)  # [c_inlet, U_max, g, mu_f, d_p]
+    params = torch.rand(batch_size, 9, device=device)
 
     with torch.no_grad():
         out = model(params)
