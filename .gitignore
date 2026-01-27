@@ -43,7 +43,23 @@ simulation_results.csv
 .simulation_data/*
 .simulation_timeseries/*
 .torch_data/
+simulation_data/
+simulation_timeseries/
+torch_data/
 
 #test files
 .src/solver/t.ipynb
 .src/solver/t.py
+src/solver/t.ipynb
+src/solver/t.py
+
+# Caches
+__pypackages__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+htmlcov/
+.coverage
+coverage.xml
+.cursor/
