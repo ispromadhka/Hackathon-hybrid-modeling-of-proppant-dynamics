@@ -399,11 +399,11 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     x = solver.x
     y = solver.y
 
-    # Color scale
-    c_max = min(0.65, max(np.nanmax(traj_ns) * 1.1, 0.1))
+    # Color scale - use max from NS data only (NS is ground truth)
+    c_max_ns = min(0.65, max(np.nanmax(traj_ns) * 1.1, 0.05))
 
-    # NS figure
-    fig_ns = create_contour_figure(traj_ns, x, y, f"NS: c₀={c_inlet}, g={gravity}", c_max, times_ns)
+    # NS figure - always use its own scale
+    fig_ns = create_contour_figure(traj_ns, x, y, f"NS: c₀={c_inlet}, g={gravity}", c_max_ns, times_ns)
 
     # NN figure
     if nn_available and traj_nn is not None:
@@ -412,7 +412,9 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         times_common = times_ns[:n_common]
         traj_nn_matched = traj_nn[:n_common]
 
-        fig_nn = create_contour_figure(traj_nn_matched, x, y, f"FNO Prediction", c_max, times_common)
+        # NN uses its own color scale (may be different from NS if model is bad)
+        c_max_nn = min(0.65, max(np.nanmax(traj_nn_matched) * 1.1, 0.05))
+        fig_nn = create_contour_figure(traj_nn_matched, x, y, f"FNO Prediction", c_max_nn, times_common)
 
         # Compute error over time
         errors = []
