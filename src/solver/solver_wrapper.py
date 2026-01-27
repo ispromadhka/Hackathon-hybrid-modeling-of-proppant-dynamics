@@ -24,8 +24,10 @@ class ProppantSolver:
     def __init__(
         self,
         # Grid
-        nx: int = 60,
-        ny: int = 30,
+        nx: int = 60 * 3,
+        ny: int = 30 * 3,
+        # nx: int = 60,
+        # ny: int = 30,
         Lx: float = 60.0,
         Ly: float = 30.0,
         T: float = 100.0,
@@ -50,7 +52,8 @@ class ProppantSolver:
         c_in_arr: np.ndarray = None,
         # Numerics
         cfl: float = 0.8,
-        rk_stages: int = 2,
+        rk_stages: int = 3,
+        # rk_stages: int = 2,
         use_weno: bool = False,
         lim_type: str = 'koren',
     ):
