@@ -16,7 +16,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+try:
+    from torch.cuda.amp import autocast, GradScaler
+    AMP_AVAILABLE = True
+except ImportError:
+    AMP_AVAILABLE = False
 from pathlib import Path
 import json
 import time
@@ -102,7 +106,11 @@ class EnhancedTrainer:
         self.val_loader = val_loader
         self.device = device
         self.n_epochs = n_epochs
-        self.use_amp = use_amp and device == 'cuda'
+        # AMP doesn't support complex numbers (used in FFT), so disable it for FNO
+        # See: https://github.com/pytorch/pytorch/issues/48108
+        self.use_amp = False  # Disabled due to ComplexFloat incompatibility
+        if use_amp:
+            print("Note: AMP disabled (FFT uses complex numbers which are incompatible)")
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.warmup_epochs = warmup_epochs
 
@@ -284,7 +292,7 @@ class EnhancedTrainer:
         print("=" * 100)
         print(f"Device: {self.device}")
         print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
-        print(f"Mixed Precision: {self.use_amp}")
+        print(f"Mixed Precision: {self.use_amp} (disabled for FFT compatibility)")
         print(f"Gradient Accumulation: {self.gradient_accumulation_steps}x")
         print(f"Effective Batch Size: {self.train_loader.batch_size * self.gradient_accumulation_steps}")
         print(f"Early Stopping: patience={self.patience}, min_delta={self.min_delta}")
