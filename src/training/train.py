@@ -176,10 +176,13 @@ class Trainer:
             self.optimizer.zero_grad()
 
             pred = self.model(params)
+            # pred shape: (batch, n_times, nx, ny)
 
-            # Match dimensions
+            # Match dimensions - trajectory is (batch, n_times, ny, nx)
+            # Need to transpose spatial dims to match pred
             n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :]
+            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
+            # target now: (batch, n_times, nx, ny)
 
             loss = self.criterion(pred, target)
             loss.backward()
@@ -201,9 +204,11 @@ class Trainer:
             trajectory = batch['trajectory'].to(self.device)
 
             pred = self.model(params)
+            # pred shape: (batch, n_times, nx, ny)
 
+            # Transpose target to match pred
             n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :]
+            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
 
             total_loss += self.criterion(pred, target).item()
 

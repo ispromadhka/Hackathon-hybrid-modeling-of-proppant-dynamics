@@ -210,7 +210,7 @@ app.layout = html.Div([
 
 
 def create_contour_figure(data, x, y, title, times, frame_idx=0, show_colorbar=False):
-    """Create animated contour figure with fixed 0-65% color scale."""
+    """Create animated heatmap figure with fixed 0-65% color scale."""
     # Convert to percentage
     data_pct = data * 100
 
@@ -220,26 +220,22 @@ def create_contour_figure(data, x, y, title, times, frame_idx=0, show_colorbar=F
     frames = []
     for i in range(len(times)):
         frames.append(go.Frame(
-            data=[go.Contour(
+            data=[go.Heatmap(
                 z=np.clip(data_pct[i], 0, 65),
                 x=x, y=y,
                 colorscale='Turbo',
                 zmin=zmin, zmax=zmax,
-                contours=dict(coloring='heatmap', showlines=False),
-                ncontours=50,
-                showscale=False,  # No colorbar on individual plots
+                showscale=False,
             )],
             name=str(i)
         ))
 
     fig = go.Figure(
-        data=[go.Contour(
+        data=[go.Heatmap(
             z=np.clip(data_pct[frame_idx], 0, 65),
             x=x, y=y,
             colorscale='Turbo',
             zmin=zmin, zmax=zmax,
-            contours=dict(coloring='heatmap', showlines=False),
-            ncontours=50,
             showscale=False,
         )],
         frames=frames
