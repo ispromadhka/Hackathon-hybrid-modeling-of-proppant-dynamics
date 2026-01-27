@@ -163,22 +163,22 @@ app.layout = html.Div([
 
         # Main content area
         html.Div([
-            # NN Plot - Fixed 700x350 px (2:1 aspect ratio)
+            # NN Plot - Fixed 1200x600 px (2:1 aspect ratio)
             html.Div([
                 html.Div([
                     html.H3("Neural Network (FNO)", style={'color': '#3498db', 'margin': '0', 'flex': '1'}),
-                    html.Div(id='nn-time', style={'fontSize': '13px', 'color': '#3498db', 'fontWeight': 'bold'})
+                    html.Div(id='nn-time', style={'fontSize': '14px', 'color': '#3498db', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center', 'padding': '0 10px'}),
-                dcc.Graph(id='nn-plot', config={'staticPlot': False}, style={'height': '350px', 'width': '700px'})
+                dcc.Graph(id='nn-plot', config={'staticPlot': False}, style={'height': '600px', 'width': '1200px'})
             ]),
 
-            # NS Plot - Fixed 700x350 px (2:1 aspect ratio)
+            # NS Plot - Fixed 1200x600 px (2:1 aspect ratio)
             html.Div([
                 html.Div([
                     html.H3("Numerical Solver (NS)", style={'color': '#e74c3c', 'margin': '0', 'flex': '1'}),
-                    html.Div(id='ns-time', style={'fontSize': '13px', 'color': '#e74c3c', 'fontWeight': 'bold'})
+                    html.Div(id='ns-time', style={'fontSize': '14px', 'color': '#e74c3c', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center', 'padding': '0 10px'}),
-                dcc.Graph(id='ns-plot', config={'staticPlot': False}, style={'height': '350px', 'width': '700px'})
+                dcc.Graph(id='ns-plot', config={'staticPlot': False}, style={'height': '600px', 'width': '1200px'})
             ]),
 
             # Horizontal Colorbar at the bottom
@@ -236,11 +236,11 @@ def create_heatmap_figure(data, x, y, title, times, frame_idx=0):
         frames=frames
     )
 
-    # Fixed plot dimensions: 600px width, 300px height (2:1 ratio matching domain 60x30)
+    # Fixed plot dimensions: 1200px width, 600px height (2:1 aspect ratio)
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=11)),
-        width=700,  # Fixed width
-        height=350,  # Fixed height (half of width for 1:2 aspect)
+        title=dict(text=title, x=0.5, font=dict(size=14)),
+        width=1200,  # Fixed width
+        height=600,  # Fixed height
         xaxis=dict(
             title='x [m]',
             range=[0, DOMAIN_LX],  # FIXED 0-60
@@ -293,9 +293,9 @@ def create_empty_figure(title, message):
     fig.add_annotation(text=message, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                       font=dict(size=14, color='#7f8c8d'))
     fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=11)),
-        width=700,  # Fixed width
-        height=350,  # Fixed height (1:2 aspect)
+        title=dict(text=title, x=0.5, font=dict(size=14)),
+        width=1200,  # Fixed width
+        height=600,  # Fixed height
         xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], autorange=False, fixedrange=True, showgrid=True, dtick=10),
         yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], autorange=False, fixedrange=True, showgrid=True, dtick=10),
         margin=dict(l=60, r=20, t=35, b=60)

@@ -35,6 +35,118 @@ class RelativeLpLoss(nn.Module):
         return (diff_norm / target_norm).mean()
 
 
+# ============== METRICS ==============
+class Metrics:
+    """
+    Multiple metrics to track model quality during training.
+
+    Metrics tracked:
+    - Relative L2 Error (main loss)
+    - MAE (Mean Absolute Error)
+    - MSE (Mean Squared Error)
+    - Max Error (worst case)
+    - SSIM-like (Structural Similarity)
+    - Mass Conservation Error
+    - Coverage Accuracy (% of area with concentration > threshold)
+    """
+
+    @staticmethod
+    @torch.no_grad()
+    def compute_all(pred: torch.Tensor, target: torch.Tensor) -> dict:
+        """Compute all metrics for a batch."""
+        pred_flat = pred.reshape(pred.shape[0], -1)
+        target_flat = target.reshape(target.shape[0], -1)
+
+        # Relative L2 Error
+        diff_norm = torch.norm(pred_flat - target_flat, p=2, dim=1)
+        target_norm = torch.norm(target_flat, p=2, dim=1) + 1e-8
+        rel_l2 = (diff_norm / target_norm).mean().item()
+
+        # MAE
+        mae = torch.abs(pred - target).mean().item()
+
+        # MSE
+        mse = ((pred - target) ** 2).mean().item()
+
+        # RMSE
+        rmse = mse ** 0.5
+
+        # Max Error
+        max_err = torch.abs(pred - target).max().item()
+
+        # Peak Signal-to-Noise Ratio (higher is better)
+        max_val = max(target.max().item(), 1e-8)
+        psnr = 10 * torch.log10(max_val ** 2 / (mse + 1e-8)).item() if mse > 0 else 100.0
+
+        # Mass Conservation Error (total mass should be similar)
+        pred_mass = pred.sum(dim=(-2, -1))  # Sum over spatial dims
+        target_mass = target.sum(dim=(-2, -1))
+        mass_err = torch.abs(pred_mass - target_mass) / (target_mass + 1e-8)
+        mass_err = mass_err.mean().item()
+
+        # Coverage Accuracy (% agreement on cells with c > 0.1)
+        threshold = 0.1
+        pred_coverage = (pred > threshold).float()
+        target_coverage = (target > threshold).float()
+        coverage_acc = (pred_coverage == target_coverage).float().mean().item() * 100
+
+        # R² Score (Coefficient of Determination)
+        ss_res = ((pred - target) ** 2).sum().item()
+        ss_tot = ((target - target.mean()) ** 2).sum().item() + 1e-8
+        r2 = 1 - ss_res / ss_tot
+
+        return {
+            'rel_l2': rel_l2,
+            'mae': mae,
+            'mse': mse,
+            'rmse': rmse,
+            'max_err': max_err,
+            'psnr': psnr,
+            'mass_err': mass_err,
+            'coverage_acc': coverage_acc,
+            'r2': r2,
+        }
+
+    @staticmethod
+    def aggregate(metrics_list: list) -> dict:
+        """Aggregate metrics from multiple batches."""
+        if not metrics_list:
+            return {}
+
+        keys = metrics_list[0].keys()
+        aggregated = {}
+        for key in keys:
+            values = [m[key] for m in metrics_list]
+            aggregated[key] = sum(values) / len(values)
+
+        return aggregated
+
+    @staticmethod
+    def format(metrics: dict) -> str:
+        """Format metrics for printing."""
+        parts = []
+
+        # Quality (inverse of rel_l2)
+        quality = max(0, (1 - metrics.get('rel_l2', 1)) * 100)
+        parts.append(f"Quality: {quality:.1f}%")
+
+        # Key metrics
+        if 'mae' in metrics:
+            parts.append(f"MAE: {metrics['mae']:.4f}")
+        if 'rmse' in metrics:
+            parts.append(f"RMSE: {metrics['rmse']:.4f}")
+        if 'max_err' in metrics:
+            parts.append(f"MaxErr: {metrics['max_err']:.3f}")
+        if 'r2' in metrics:
+            parts.append(f"R²: {metrics['r2']:.3f}")
+        if 'mass_err' in metrics:
+            parts.append(f"MassErr: {metrics['mass_err']:.1%}")
+        if 'coverage_acc' in metrics:
+            parts.append(f"Coverage: {metrics['coverage_acc']:.1f}%")
+
+        return " | ".join(parts)
+
+
 class SpectralLoss(nn.Module):
     """
     Frequency-aware loss to combat spectral bias in FNOs.
@@ -195,9 +307,11 @@ class Trainer:
         return total_loss / len(self.train_loader)
 
     @torch.no_grad()
-    def validate(self) -> float:
+    def validate(self) -> tuple:
+        """Validate and compute all metrics."""
         self.model.eval()
         total_loss = 0.0
+        batch_metrics = []
 
         for batch in self.val_loader:
             params = batch['params'].to(self.device)
@@ -212,7 +326,14 @@ class Trainer:
 
             total_loss += self.criterion(pred, target).item()
 
-        return total_loss / len(self.val_loader)
+            # Compute detailed metrics
+            metrics = Metrics.compute_all(pred, target)
+            batch_metrics.append(metrics)
+
+        avg_loss = total_loss / len(self.val_loader)
+        avg_metrics = Metrics.aggregate(batch_metrics)
+
+        return avg_loss, avg_metrics
 
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         if not self.checkpoint_dir:
@@ -237,9 +358,10 @@ class Trainer:
         print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print(f"Scheduler: {self.warmup_epochs} warmup epochs + cosine annealing")
         print(f"Early stopping: patience={self.patience}, min_delta={self.min_delta}")
-        print("-" * 80)
+        print("-" * 100)
 
         initial_lr = self.optimizer.param_groups[0]['lr']
+        self.metrics_history = []
 
         for epoch in range(1, n_epochs + 1):
             t0 = time.time()
@@ -254,15 +376,17 @@ class Trainer:
                 self.scheduler.step()
 
             train_loss = self.train_epoch()
-            val_loss = self.validate()
+            val_loss, val_metrics = self.validate()
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
+            self.metrics_history.append(val_metrics)
 
             # Check for improvement
             is_best = val_loss < (self.best_val_loss - self.min_delta)
             if is_best:
                 self.best_val_loss = val_loss
+                self.best_metrics = val_metrics
                 self.patience_counter = 0
             else:
                 self.patience_counter += 1
@@ -272,24 +396,23 @@ class Trainer:
             elapsed = time.time() - t0
             lr = self.optimizer.param_groups[0]['lr']
 
-            # Quality metric: convert relative L2 to accuracy percentage
-            quality = max(0, (1 - val_loss) * 100)
-
             status = ""
             if is_best:
                 status = " [BEST]"
             elif self.patience_counter > 0:
                 status = f" [{self.patience_counter}/{self.patience}]"
 
+            # Print main info
             print(
                 f"Epoch {epoch:3d} | "
                 f"Train: {train_loss:.4e} | "
                 f"Val: {val_loss:.4e} | "
-                f"Quality: {quality:.1f}% | "
                 f"LR: {lr:.2e} | "
                 f"Time: {elapsed:.1f}s"
                 + status
             )
+            # Print detailed metrics
+            print(f"         → {Metrics.format(val_metrics)}")
 
             # Early stopping check
             if self.patience_counter >= self.patience:
@@ -297,10 +420,11 @@ class Trainer:
                 self.early_stop = True
                 break
 
-        print("-" * 80)
+        print("-" * 100)
         print(f"Training finished!")
         print(f"Best validation loss: {self.best_val_loss:.4e}")
-        print(f"Best quality: {max(0, (1 - self.best_val_loss) * 100):.1f}%")
+        if hasattr(self, 'best_metrics'):
+            print(f"Best metrics: {Metrics.format(self.best_metrics)}")
 
 
 def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
