@@ -167,7 +167,7 @@ def train_worker(rank, world_size, gpu_ids, args):
         train_dataset,
         batch_size=batch_size_per_gpu,
         sampler=train_sampler,
-        num_workers=2,
+        num_workers=0,  # Avoid /tmp issues on shared systems
         pin_memory=True,
         drop_last=True
     )
@@ -176,7 +176,7 @@ def train_worker(rank, world_size, gpu_ids, args):
         val_dataset,
         batch_size=batch_size_per_gpu,
         shuffle=False,
-        num_workers=2,
+        num_workers=0,
         pin_memory=True
     )
 
