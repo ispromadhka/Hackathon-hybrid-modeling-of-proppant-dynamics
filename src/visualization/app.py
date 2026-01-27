@@ -26,7 +26,7 @@ DOMAIN_LX = 60.0
 DOMAIN_LY = 30.0
 
 def create_empty_figure(title="", show_message=None):
-    """Create empty placeholder figure with correct axis range."""
+    """Create empty placeholder figure with correct axis range and 2:1 aspect ratio."""
     fig = go.Figure()
     if show_message:
         fig.add_annotation(
@@ -37,8 +37,8 @@ def create_empty_figure(title="", show_message=None):
         )
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
-        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX]),
-        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY]),
+        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], constrain='domain'),
+        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], scaleanchor='x', scaleratio=1),
         margin=dict(l=50, r=80, t=30, b=50)
     )
     return fig
@@ -197,16 +197,11 @@ app.layout = html.Div([
                           figure=create_empty_figure("Numerical Solver", "Click RUN to start")),
             ], style={'padding': '2px'}),
 
-            # Error plot - hidden when model mismatch
+            # Colorbar for concentration scale
             html.Div([
-                html.H4("Relative L2 Error", style={'textAlign': 'center', 'margin': '2px 0',
-                                                     'fontSize': '13px', 'color': '#7f8c8d'}),
-                dcc.Graph(id='error-plot', style={'height': '12vh'},
-                          figure=go.Figure().update_layout(
-                              xaxis=dict(title='Time [s]'),
-                              yaxis=dict(title='Error [%]'),
-                              margin=dict(l=50, r=20, t=10, b=35)
-                          ))
+                dcc.Graph(id='colorbar-plot', style={'height': '80px'},
+                          figure=create_colorbar_figure(),
+                          config={'staticPlot': True})
             ], style={'padding': '2px'})
         ], style={'flex': '1', 'padding': '3px', 'overflowY': 'auto'})
 
@@ -214,11 +209,13 @@ app.layout = html.Div([
 ], style={'fontFamily': 'Segoe UI, Arial, sans-serif', 'margin': '0', 'padding': '0'})
 
 
-def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
-    """Create animated contour figure."""
+def create_contour_figure(data, x, y, title, times, frame_idx=0, show_colorbar=False):
+    """Create animated contour figure with fixed 0-65% color scale."""
     # Convert to percentage
     data_pct = data * 100
-    c_max_pct = c_max * 100
+
+    # Fixed color scale 0-65% for all plots
+    zmin, zmax = 0, 65
 
     frames = []
     for i in range(len(times)):
@@ -227,11 +224,10 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
                 z=np.clip(data_pct[i], 0, 65),
                 x=x, y=y,
                 colorscale='Turbo',
-                zmin=0, zmax=c_max_pct,
+                zmin=zmin, zmax=zmax,
                 contours=dict(coloring='heatmap', showlines=False),
                 ncontours=50,
-                showscale=(i == 0),
-                colorbar=dict(title=dict(text='c [%]', side='right'), thickness=12) if i == 0 else None
+                showscale=False,  # No colorbar on individual plots
             )],
             name=str(i)
         ))
@@ -241,18 +237,18 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
             z=np.clip(data_pct[frame_idx], 0, 65),
             x=x, y=y,
             colorscale='Turbo',
-            zmin=0, zmax=c_max_pct,
+            zmin=zmin, zmax=zmax,
             contours=dict(coloring='heatmap', showlines=False),
             ncontours=50,
-            colorbar=dict(title=dict(text='c [%]', side='right'), thickness=12)
+            showscale=False,
         )],
         frames=frames
     )
 
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
-        xaxis=dict(title='x [m]'),
-        yaxis=dict(title='y [m]'),
+        xaxis=dict(title='x [m]', constrain='domain'),
+        yaxis=dict(title='y [m]', scaleanchor='x', scaleratio=1),  # 1:1 aspect for axes (domain is 2:1)
         updatemenus=[{
             'type': 'buttons',
             'showactive': True,
@@ -300,8 +296,51 @@ def create_contour_figure(data, x, y, title, c_max, times, frame_idx=0):
     return fig
 
 
+def create_colorbar_figure():
+    """Create horizontal colorbar showing concentration scale 0-100%."""
+    # Create a dummy heatmap just for the colorbar
+    fig = go.Figure()
+
+    # Add invisible heatmap to get colorbar
+    fig.add_trace(go.Heatmap(
+        z=[[0, 65]],
+        x=[0, 65],
+        y=[0],
+        colorscale='Turbo',
+        zmin=0, zmax=65,
+        showscale=True,
+        colorbar=dict(
+            title=dict(text='Concentration c [%]', side='top'),
+            orientation='h',
+            x=0.5,
+            y=0.5,
+            xanchor='center',
+            yanchor='middle',
+            len=0.9,
+            thickness=25,
+            tickvals=[0, 10, 20, 30, 40, 50, 60],
+            ticktext=['0%', '10%', '20%', '30%', '40%', '50%', '60%'],
+        ),
+        hoverinfo='none',
+    ))
+
+    fig.update_layout(
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        margin=dict(l=20, r=20, t=30, b=10),
+        height=80,
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+    )
+
+    # Hide the actual heatmap data
+    fig.update_traces(visible=True)
+
+    return fig
+
+
 @callback(
-    [Output('nn-plot', 'figure'), Output('ns-plot', 'figure'), Output('error-plot', 'figure'),
+    [Output('nn-plot', 'figure'), Output('ns-plot', 'figure'),
      Output('nn-time', 'children'), Output('ns-time', 'children'), Output('timing-info', 'children'),
      Output('loading-output', 'children')],
     Input('run-btn', 'n_clicks'),
@@ -406,11 +445,8 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     x = solver.x
     y = solver.y
 
-    # Color scale - use max from NS data only (NS is ground truth)
-    c_max_ns = min(0.65, max(np.nanmax(traj_ns) * 1.1, 0.05))
-
-    # NS figure - always use its own scale
-    fig_ns = create_contour_figure(traj_ns, x, y, f"NS: c₀={c_inlet}, g={gravity}", c_max_ns, times_ns)
+    # NS figure with fixed color scale 0-65%
+    fig_ns = create_contour_figure(traj_ns, x, y, f"NS: c₀={c_inlet}, g={gravity}", times_ns)
 
     # NN figure
     if nn_available and traj_nn is not None:
@@ -419,51 +455,20 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         times_common = times_ns[:n_common]
         traj_nn_matched = traj_nn[:n_common]
 
-        # NN uses its own color scale (may be different from NS if model is bad)
-        c_max_nn = min(0.65, max(np.nanmax(traj_nn_matched) * 1.1, 0.05))
-        fig_nn = create_contour_figure(traj_nn_matched, x, y, f"FNO Prediction", c_max_nn, times_common)
+        fig_nn = create_contour_figure(traj_nn_matched, x, y, "FNO Prediction", times_common)
 
-        # Compute error over time
+        # Compute error for display
         errors = []
         for i in range(n_common):
-            # Relative L2 error
             diff = np.linalg.norm(traj_nn_matched[i] - traj_ns[i])
             norm = np.linalg.norm(traj_ns[i]) + 1e-8
-            errors.append(diff / norm * 100)  # percentage
-
-        # Error plot
-        fig_error = go.Figure()
-        fig_error.add_trace(go.Scatter(
-            x=times_common, y=errors,
-            mode='lines+markers',
-            name='Relative L2 Error',
-            line=dict(color='#9b59b6', width=2),
-            marker=dict(size=6)
-        ))
-        fig_error.update_layout(
-            title=dict(text="NN vs NS Error Over Time", x=0.5, font=dict(size=12)),
-            xaxis=dict(title='Time [s]'),
-            yaxis=dict(title='Relative Error [%]'),
-            margin=dict(l=50, r=20, t=40, b=40)
-        )
+            errors.append(diff / norm * 100)
 
         avg_error = np.mean(errors)
         final_error = errors[-1] if errors else 0
     else:
-        # No NN model - show placeholder with same axis range as NS
+        # No NN model - show placeholder
         fig_nn = create_empty_figure("FNO Prediction", "No trained model.<br>Run: python app.py --train")
-
-        fig_error = go.Figure()
-        fig_error.add_annotation(
-            text="Train model to see comparison metrics",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False
-        )
-        fig_error.update_layout(
-            xaxis=dict(title='Time [s]'),
-            yaxis=dict(title='Relative Error [%]'),
-            margin=dict(l=50, r=20, t=40, b=40)
-        )
         avg_error = 0
         final_error = 0
 
@@ -517,7 +522,7 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
                          style={'color': '#e74c3c', 'fontSize': '11px'}),
             ])
 
-    return fig_nn, fig_ns, fig_error, nn_time_text, ns_time_text, timing_content, ""
+    return fig_nn, fig_ns, nn_time_text, ns_time_text, timing_content, ""
 
 
 def run_app(debug=True, port=8050):
