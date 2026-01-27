@@ -24,39 +24,84 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 # ============== GPU UTILITIES ==============
 
-def get_gpu_count():
-    """Get number of available GPUs."""
+def get_available_gpus(min_free_gb: float = 10.0):
+    """
+    Get list of GPU indices with sufficient free memory.
+
+    Args:
+        min_free_gb: Minimum free memory in GB required
+
+    Returns:
+        List of available GPU indices
+    """
     if not torch.cuda.is_available():
-        return 0
-    return torch.cuda.device_count()
+        return []
+
+    available = []
+    count = torch.cuda.device_count()
+
+    for i in range(count):
+        try:
+            # Get memory info
+            free_mem, total_mem = torch.cuda.mem_get_info(i)
+            free_gb = free_mem / (1024**3)
+
+            if free_gb >= min_free_gb:
+                available.append(i)
+        except Exception as e:
+            print(f"  Warning: Could not check GPU {i}: {e}")
+            continue
+
+    return available
 
 
-def print_gpu_info():
-    """Print GPU information (only from rank 0)."""
+def get_gpu_count():
+    """Get number of available GPUs with sufficient memory."""
+    return len(get_available_gpus())
+
+
+def print_gpu_info(min_free_gb: float = 10.0):
+    """Print GPU information and availability."""
     if not torch.cuda.is_available():
         print("No GPU available")
-        return
+        return []
 
     count = torch.cuda.device_count()
-    total_mem = 0
+    available = []
 
     for i in range(count):
         props = torch.cuda.get_device_properties(i)
-        mem_gb = props.total_memory / (1024**3)
-        total_mem += mem_gb
-        print(f"  [{i}] {props.name} - {mem_gb:.1f} GB")
+        total_gb = props.total_memory / (1024**3)
 
-    print(f"Total: {total_mem:.1f} GB across {count} GPUs")
+        try:
+            free_mem, _ = torch.cuda.mem_get_info(i)
+            free_gb = free_mem / (1024**3)
+            status = "OK" if free_gb >= min_free_gb else f"BUSY ({total_gb - free_gb:.1f} GB used)"
+
+            if free_gb >= min_free_gb:
+                available.append(i)
+                print(f"  [{i}] {props.name} - {free_gb:.1f}/{total_gb:.1f} GB free [OK]")
+            else:
+                print(f"  [{i}] {props.name} - {free_gb:.1f}/{total_gb:.1f} GB free [SKIP]")
+        except Exception as e:
+            print(f"  [{i}] {props.name} - {total_gb:.1f} GB [ERROR: {e}]")
+
+    print(f"Available: {len(available)}/{count} GPUs")
+    return available
 
 
 # ============== DISTRIBUTED SETUP ==============
 
-def setup_distributed(rank, world_size):
+def setup_distributed(rank, world_size, gpu_ids):
     """Initialize distributed process group."""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '29500'
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+
+    # Map rank to actual GPU ID
+    gpu_id = gpu_ids[rank]
+    torch.cuda.set_device(gpu_id)
+    return gpu_id
 
 
 def cleanup_distributed():
@@ -74,15 +119,15 @@ from src.training.train import Metrics
 
 # ============== DISTRIBUTED TRAINER ==============
 
-def train_worker(rank, world_size, args):
+def train_worker(rank, world_size, gpu_ids, args):
     """
     Training worker for distributed training.
     Each GPU runs this function.
     """
-    # Setup distributed
-    setup_distributed(rank, world_size)
+    # Setup distributed with GPU mapping
+    gpu_id = setup_distributed(rank, world_size, gpu_ids)
 
-    device = f'cuda:{rank}'
+    device = f'cuda:{gpu_id}'
     is_main = (rank == 0)
 
     if is_main:
@@ -160,7 +205,7 @@ def train_worker(rank, world_size, args):
 
     # Move to GPU and wrap with DDP
     model = model.to(device)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+    model = DDP(model, device_ids=[gpu_id], find_unused_parameters=False)
 
     n_params_total = sum(p.numel() for p in model.parameters())
     if is_main:
@@ -333,18 +378,31 @@ def main(
         print("Run: python app.py --generate --samples 500")
         return
 
-    # GPU info
-    n_gpus = get_gpu_count()
+    # Minimum free memory required per GPU (in GB)
+    # xlarge+specboost needs ~25GB, large needs ~10GB
+    if model_size == 'xlarge' and use_specboost:
+        min_free_gb = 25.0
+    elif model_size == 'xlarge':
+        min_free_gb = 20.0
+    elif model_size == 'large':
+        min_free_gb = 12.0
+    else:
+        min_free_gb = 8.0
 
     print("=" * 60)
     print("GPU CONFIGURATION")
     print("=" * 60)
 
+    # Get available GPUs with sufficient memory
+    gpu_ids = print_gpu_info(min_free_gb=min_free_gb)
+    n_gpus = len(gpu_ids)
+
     if n_gpus == 0:
-        print("No GPU available!")
+        print(f"\nNo GPUs with >= {min_free_gb:.0f} GB free memory!")
+        print("Try a smaller model or free up GPU memory.")
         return
 
-    print_gpu_info()
+    print(f"\nUsing GPUs: {gpu_ids}")
 
     # Auto batch size
     if batch_size <= 0:
@@ -358,8 +416,8 @@ def main(
         else:
             batch_size = 32 * n_gpus
 
-    print(f"\nModel: {model_size}" + (" + SpecBoost" if use_specboost else ""))
-    print(f"GPUs: {n_gpus}")
+    print(f"Model: {model_size}" + (" + SpecBoost" if use_specboost else ""))
+    print(f"GPUs: {n_gpus} (IDs: {gpu_ids})")
     print(f"Total batch size: {batch_size}")
     print(f"Batch per GPU: {batch_size // n_gpus}")
 
@@ -379,7 +437,7 @@ def main(
     print(f"\nLaunching {n_gpus}-GPU distributed training...")
     mp.spawn(
         train_worker,
-        args=(n_gpus, args),
+        args=(n_gpus, gpu_ids, args),
         nprocs=n_gpus,
         join=True
     )
