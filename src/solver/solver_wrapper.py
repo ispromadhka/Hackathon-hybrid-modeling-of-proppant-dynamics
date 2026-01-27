@@ -203,7 +203,11 @@ class ProppantSolver:
 
         # Convert Q (mass) to concentration c = Q/w
         w = self.config['physics']['w']
+        cmax = self.config['physics']['cmax']
         concentrations = self._solver.Q[:n_steps] / w
+
+        # Clip to physical range [0, cmax]
+        concentrations = np.clip(concentrations, 0, cmax)
 
         return times, concentrations
 
