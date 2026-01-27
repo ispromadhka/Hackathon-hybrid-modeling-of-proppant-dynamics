@@ -355,26 +355,26 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         n_params = MODEL.n_params
 
         if n_params == 5:
-            # Old 5-param model: [c_inlet, Q_inlet(?), g, mu0, r_particle]
+            # Old 5-param model (legacy, untrained properly)
             params = torch.tensor([[
                 c_inlet,
-                Q_inlet * 20,  # Scale to match training range
+                Q_inlet * 20,
                 gravity,
-                mu0 * 100,     # Scale viscosity
-                r_p * 1000,    # Scale particle radius
+                mu0 * 100,
+                r_p * 1000,
             ]], dtype=torch.float32)
         else:
-            # New 9-param model
+            # New 9-param model - NORMALIZED to [0, 1] (must match dataset.py!)
             params = torch.tensor([[
-                c_inlet,
-                Q_inlet,
-                gravity / 15.0,
-                mu0 * 1000,
-                r_p * 1e6 / 500,
-                0.1,   # inlet_fraction
-                2.0,   # rk_stages
-                0.5,   # lim_type
-                0.0,   # injection_mode
+                c_inlet / 0.5,                    # c_inlet normalized
+                Q_inlet / 0.1,                    # Q_inlet normalized
+                gravity / 12.0,                   # g normalized
+                mu0 / 0.01,                       # mu0 normalized
+                r_p / 0.0005,                     # r_particle normalized
+                0.1 * 2,                          # inlet_fraction normalized
+                (2 - 2) / 1.0,                    # rk_stages normalized
+                0.0 / 2.0,                        # lim_type (koren=0)
+                0.0 / 2.0,                        # injection_mode (continuous=0)
             ]], dtype=torch.float32)
 
         with torch.no_grad():

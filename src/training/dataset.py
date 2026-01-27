@@ -190,18 +190,18 @@ def generate_single_sample(args: dict) -> Optional[dict]:
         injection_mode_map = {'continuous': 0, 'single_pulse': 1, 'multi_pulse': 2}
         lim_type_map = {'koren': 0, 'superbee': 1, 'minmod': 2, 'vanleer': 3}
 
-        # Parameters vector for FNO input
-        # [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type_enc, injection_mode_enc]
+        # Parameters vector for FNO input - NORMALIZED to [0, 1]
+        # This is critical for training stability
         params = np.array([
-            c_inlet,
-            Q_inlet,
-            g,
-            mu0,
-            r_particle,
-            inlet_fraction,
-            rk_stages,
-            lim_type_map.get(lim_type, 0),
-            injection_mode_map.get(injection_mode, 0),
+            c_inlet / 0.5,                    # c_inlet: [0.15, 0.50] -> [0.3, 1.0]
+            Q_inlet / 0.1,                    # Q_inlet: [0.02, 0.10] -> [0.2, 1.0]
+            g / 12.0,                         # g: [0, 12] -> [0, 1]
+            mu0 / 0.01,                       # mu0: [0.0005, 0.01] -> [0.05, 1.0]
+            r_particle / 0.0005,              # r_particle: [0.0001, 0.0005] -> [0.2, 1.0]
+            inlet_fraction * 2,               # inlet_fraction: [1/6, 1/2] -> [0.33, 1.0]
+            (rk_stages - 2) / 1.0,            # rk_stages: [2, 3] -> [0, 1]
+            lim_type_map.get(lim_type, 0) / 2.0,  # lim_type: [0, 2] -> [0, 1]
+            injection_mode_map.get(injection_mode, 0) / 2.0,  # injection_mode: [0, 2] -> [0, 1]
         ], dtype=np.float32)
 
         return {
