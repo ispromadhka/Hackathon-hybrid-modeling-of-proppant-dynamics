@@ -25,87 +25,102 @@ def load_timeseries(filepath):
     times = data['times']
     return Q, times
 
-project_root = Path(__file__).parent.parent.parent
-timeseries_dir = project_root / 'simulation_timeseries'
-output_dir = project_root / 'torch_data'
-output_dir.mkdir(exist_ok=True)
+def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | None = None, sort_by_mtime: bool = False) -> Path:
+    timeseries_dir = Path(timeseries_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-files = list(timeseries_dir.glob('*_series.npz'))
-valid_files = []
-valid_params = []
+    files = list(timeseries_dir.glob('*_series.npz'))
+    if sort_by_mtime:
+        files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    else:
+        files = sorted(files)
+    valid_files = []
+    valid_params = []
 
-for file in tqdm(files, desc="Parsing files"):
-    params = parse_filename(file.name)
-    if params:
-        valid_files.append(file)
-        valid_params.append(params)
+    for file in tqdm(files, desc="Parsing files"):
+        params = parse_filename(file.name)
+        if params:
+            valid_files.append(file)
+            valid_params.append(params)
 
-if len(valid_files) == 0:
-    raise ValueError("No simulation files found")
+    if max_files is not None:
+        valid_files = valid_files[:max_files]
+        valid_params = valid_params[:max_files]
 
-print(f"Found {len(valid_files)} simulation files")
+    if len(valid_files) == 0:
+        raise ValueError("No simulation files found")
 
-Q_list = []
-times_list = []
-params_list = []
+    Q_list = []
+    times_list = []
+    params_list = []
 
-for file, params in tqdm(zip(valid_files, valid_params), total=len(valid_files), desc="Loading data"):
-    Q, times = load_timeseries(file)
-    Q_list.append(Q)
-    times_list.append(times)
-    params_array = np.array([
-        params['c_in'],
-        params['w0'],
-        params['mu0'],
-        params['Q'],
-        params['chi'],
-        params['c_in_times'],
-        params['dT']
-    ], dtype=np.float32)
-    params_list.append(params_array)
+    for file, params in tqdm(zip(valid_files, valid_params), total=len(valid_files), desc="Loading data"):
+        Q, times = load_timeseries(file)
+        Q_list.append(Q)
+        times_list.append(times)
+        params_array = np.array([
+            params['c_in'],
+            params['w0'],
+            params['mu0'],
+            params['Q'],
+            params['chi'],
+            params['c_in_times'],
+            params['dT']
+        ], dtype=np.float32)
+        params_list.append(params_array)
 
-max_frames = max(Q.shape[0] for Q in Q_list)
-ny, nx = Q_list[0].shape[1], Q_list[0].shape[2]
-n_samples = len(Q_list)
-n_params = 7
+    max_frames = max(Q.shape[0] for Q in Q_list)
+    ny, nx = Q_list[0].shape[1], Q_list[0].shape[2]
+    n_samples = len(Q_list)
+    n_params = 7
 
-Q_padded = np.zeros((n_samples, max_frames, ny, nx), dtype=np.float32)
-times_padded = np.zeros((n_samples, max_frames), dtype=np.float32)
-params_array = np.array(params_list, dtype=np.float32)
+    Q_padded = np.zeros((n_samples, max_frames, ny, nx), dtype=np.float32)
+    times_padded = np.zeros((n_samples, max_frames), dtype=np.float32)
+    params_array = np.array(params_list, dtype=np.float32)
 
-for i, (Q, times) in enumerate(zip(Q_list, times_list)):
-    n_frames = Q.shape[0]
-    Q_padded[i, :n_frames] = Q
-    times_padded[i, :n_frames] = times
+    for i, (Q, times) in enumerate(zip(Q_list, times_list)):
+        n_frames = Q.shape[0]
+        Q_padded[i, :n_frames] = Q
+        times_padded[i, :n_frames] = times
 
-data = {
-    'Q': torch.from_numpy(Q_padded),
-    'times': torch.from_numpy(times_padded),
-    'params': torch.from_numpy(params_array),
-    'n_samples': n_samples,
-    'n_frames': max_frames,
-    'ny': ny,
-    'nx': nx,
-    'n_params': n_params
-}
+    data = {
+        'Q': torch.from_numpy(Q_padded),
+        'times': torch.from_numpy(times_padded),
+        'params': torch.from_numpy(params_array),
+        'n_samples': n_samples,
+        'n_frames': max_frames,
+        'ny': ny,
+        'nx': nx,
+        'n_params': n_params
+    }
 
-output_path = output_dir / 'data.pt'
-torch.save(data, output_path)
-print(f"Shape of Q: {data['Q'].shape}")
-print(f"Shape of times: {data['times'].shape}")
-print(f"Shape of params: {data['params'].shape}")
+    output_path = output_dir / 'data.pt'
+    torch.save(data, output_path)
 
-npz_path = output_dir / 'data.npz'
-np.savez_compressed(
-    npz_path,
-    Q=Q_padded,
-    times=times_padded,
-    params=params_array,
-    n_samples=n_samples,
-    n_frames=max_frames,
-    ny=ny,
-    nx=nx,
-    n_params=n_params
-)
-print(f"Also saved as numpy archive to {npz_path}")
+    npz_path = output_dir / 'data.npz'
+    np.savez_compressed(
+        npz_path,
+        Q=Q_padded,
+        times=times_padded,
+        params=params_array,
+        n_samples=n_samples,
+        n_frames=max_frames,
+        ny=ny,
+        nx=nx,
+        n_params=n_params
+    )
+
+    return output_path
+
+
+if __name__ == '__main__':
+    project_root = Path(__file__).parent.parent.parent
+    timeseries_dir = project_root / 'simulation_timeseries'
+    output_dir = project_root / 'torch_data'
+    out = build_torch_data(timeseries_dir, output_dir)
+    y = torch.load(out, map_location='cpu', weights_only=False)
+    print(f"Shape of Q: {tuple(y['Q'].shape)}")
+    print(f"Shape of times: {tuple(y['times'].shape)}")
+    print(f"Shape of params: {tuple(y['params'].shape)}")
 

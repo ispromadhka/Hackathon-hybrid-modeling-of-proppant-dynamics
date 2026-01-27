@@ -36,7 +36,7 @@ class RelativeLpLoss(nn.Module):
 
 
 class Trainer:
-    """Training manager for FNO model."""
+    """Training manager for FNO model with early stopping."""
 
     def __init__(
         self,
@@ -45,18 +45,31 @@ class Trainer:
         val_loader: DataLoader,
         device: str = 'cpu',
         lr: float = 1e-3,
-        checkpoint_dir: Path = None
+        n_epochs: int = 100,
+        checkpoint_dir: Path = None,
+        patience: int = 15,  # Early stopping patience
+        min_delta: float = 1e-4  # Minimum improvement threshold
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
+        self.n_epochs = n_epochs
 
         self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
 
+        warmup_epochs = min(5, max(1, n_epochs // 10))
+        self.warmup_epochs = warmup_epochs
+        self.scheduler = None
+        if n_epochs > warmup_epochs:
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=n_epochs - warmup_epochs,
+                eta_min=lr * 0.01
+            )
+
+        # Relative L2 loss (better for PDEs than MSE)
         self.criterion = RelativeLpLoss(p=2)
-        self.mse = nn.MSELoss()
 
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
@@ -65,6 +78,12 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
+
+        # Early stopping
+        self.patience = patience
+        self.min_delta = min_delta
+        self.patience_counter = 0
+        self.early_stop = False
 
     def train_epoch(self) -> float:
         self.model.train()
@@ -80,7 +99,7 @@ class Trainer:
 
             # Match dimensions
             n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :]
+            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
 
             loss = self.criterion(pred, target)
             loss.backward()
@@ -93,10 +112,9 @@ class Trainer:
         return total_loss / len(self.train_loader)
 
     @torch.no_grad()
-    def validate(self) -> dict:
+    def validate(self) -> float:
         self.model.eval()
         total_loss = 0.0
-        total_mse = 0.0
 
         for batch in self.val_loader:
             params = batch['params'].to(self.device)
@@ -105,13 +123,11 @@ class Trainer:
             pred = self.model(params)
 
             n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :]
+            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
 
             total_loss += self.criterion(pred, target).item()
-            total_mse += self.mse(pred, target).item()
 
-        n = len(self.val_loader)
-        return {'rel_l2': total_loss / n, 'mse': total_mse / n}
+        return total_loss / len(self.val_loader)
 
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         if not self.checkpoint_dir:
@@ -128,41 +144,81 @@ class Trainer:
         if is_best:
             torch.save(checkpoint, self.checkpoint_dir / 'best.pt')
 
-    def train(self, n_epochs: int):
+    def train(self, n_epochs: int = None):
+        if n_epochs is None:
+            n_epochs = self.n_epochs
+
         print(f"Training on {self.device}")
         print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"Scheduler: {self.warmup_epochs} warmup epochs + cosine annealing")
+        print(f"Early stopping: patience={self.patience}, min_delta={self.min_delta}")
+        print("-" * 80)
+
+        initial_lr = self.optimizer.param_groups[0]['lr']
 
         for epoch in range(1, n_epochs + 1):
             t0 = time.time()
 
+            # Warmup: linearly increase LR
+            if epoch <= self.warmup_epochs:
+                warmup_factor = epoch / self.warmup_epochs
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = initial_lr * warmup_factor
+            else:
+                if self.scheduler is not None:
+                    self.scheduler.step()
+
             train_loss = self.train_epoch()
-            val_metrics = self.validate()
+            val_loss = self.validate()
 
-            self.scheduler.step()
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
 
-            is_best = val_metrics['rel_l2'] < self.best_val_loss
+            # Check for improvement
+            is_best = val_loss < (self.best_val_loss - self.min_delta)
             if is_best:
-                self.best_val_loss = val_metrics['rel_l2']
+                self.best_val_loss = val_loss
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
 
             self.save_checkpoint(epoch, is_best)
 
             elapsed = time.time() - t0
             lr = self.optimizer.param_groups[0]['lr']
 
+            # Quality metric: convert relative L2 to accuracy percentage
+            quality = max(0, (1 - val_loss) * 100)
+
+            status = ""
+            if is_best:
+                status = " [BEST]"
+            elif self.patience_counter > 0:
+                status = f" [{self.patience_counter}/{self.patience}]"
+
             print(
                 f"Epoch {epoch:3d} | "
                 f"Train: {train_loss:.4e} | "
-                f"Val: {val_metrics['rel_l2']:.4e} | "
-                f"MSE: {val_metrics['mse']:.4e} | "
+                f"Val: {val_loss:.4e} | "
+                f"Quality: {quality:.1f}% | "
                 f"LR: {lr:.2e} | "
                 f"Time: {elapsed:.1f}s"
-                + (" *" if is_best else "")
+                + status
             )
 
-        print(f"\nBest val loss: {self.best_val_loss:.4e}")
+            # Early stopping check
+            if self.patience_counter >= self.patience:
+                print(f"\nEarly stopping triggered after {epoch} epochs (no improvement for {self.patience} epochs)")
+                self.early_stop = True
+                break
+
+        print("-" * 80)
+        print(f"Training finished!")
+        print(f"Best validation loss: {self.best_val_loss:.4e}")
+        print(f"Best quality: {max(0, (1 - self.best_val_loss) * 100):.1f}%")
 
 
-def main(epochs: int = 100):
+def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
     """Main training entry point."""
     data_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
     checkpoint_dir = Path(__file__).parent.parent.parent / 'checkpoints'
@@ -178,21 +234,33 @@ def main(epochs: int = 100):
     with open(data_dir / 'metadata.json') as f:
         metadata = json.load(f)
 
+    batch_size = 2
+    try:
+        nx = int(metadata.get('nx', 0))
+        ny = int(metadata.get('ny', 0))
+        n_times_meta = int(metadata.get('n_times', 0))
+        if nx * ny * max(n_times_meta, 1) >= 2_000_000:
+            batch_size = 1
+    except Exception:
+        batch_size = 1
+
     train_loader, val_loader = create_dataloaders(
-        data_dir, batch_size=16, train_ratio=0.8, num_workers=0
+        data_dir, batch_size=batch_size, train_ratio=0.8, num_workers=0
     )
 
-    # Get n_times from data
+    # Get n_times and n_params from data
     sample = next(iter(train_loader))
     n_times = sample['trajectory'].shape[1]
+    n_params = sample['params'].shape[1]
 
     print(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val")
-    print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps")
+    print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps, {n_params} params")
 
     model = create_model(
         nx=metadata['nx'],
         ny=metadata['ny'],
         n_times=n_times,
+        n_params=n_params,
         device=device
     )
 
@@ -201,11 +269,13 @@ def main(epochs: int = 100):
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        lr=1e-3,
-        checkpoint_dir=checkpoint_dir
+        lr=lr,
+        n_epochs=epochs,
+        checkpoint_dir=checkpoint_dir,
+        patience=patience
     )
 
-    trainer.train(n_epochs=epochs)
+    trainer.train()
 
 
 if __name__ == '__main__':

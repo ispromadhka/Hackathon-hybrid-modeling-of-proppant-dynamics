@@ -1,24 +1,31 @@
 """
 Dataset generation and loading for FNO training.
-Uses the proppant transport solver with inlet injection.
+Uses the full CPU_solver with proper physics.
+
+Features:
+- Latin Hypercube Sampling for uniform parameter coverage
+- Multiple injection modes (continuous, single_pulse, multi_pulse)
+- Varied numerical schemes (limiter types, RK stages)
+- Parallel generation with multiprocessing
 """
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 import json
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import warnings
+warnings.filterwarnings('ignore')
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.solver.proppant_transport import (
-    SimulationParams,
-    PhysicalParams,
-    ProppantTransportSolver,
-)
+from src.solver.solver_wrapper import ProppantSolver
+from src.solver.generation import generate_simulations
+from src.solver.to_torch import build_torch_data
 
 
 class ProppantDataset(Dataset):
@@ -35,24 +42,21 @@ class ProppantDataset(Dataset):
 
         with np.load(self.files[0]) as data:
             self.n_times = data['concentrations'].shape[0]
-            self.nx = data['concentrations'].shape[1]
-            self.ny = data['concentrations'].shape[2]
+            self.ny = data['concentrations'].shape[1]
+            self.nx = data['concentrations'].shape[2]
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> dict:
         with np.load(self.files[idx]) as data:
-            c0 = data['concentrations'][0]
             trajectory = data['concentrations']
-            params = data['params']  # [c_inlet, U_max, g, mu_f, d_p]
+            params = data['params']
 
-        c0 = torch.from_numpy(c0).float()
         trajectory = torch.from_numpy(trajectory).float()
         params = torch.from_numpy(params).float()
 
         sample = {
-            'c0': c0,
             'trajectory': trajectory,
             'params': params,
         }
@@ -63,93 +67,193 @@ class ProppantDataset(Dataset):
         return sample
 
 
-def generate_training_sample(sim_params: SimulationParams, phys_params: PhysicalParams) -> dict:
-    """Generate a single training sample."""
-    solver = ProppantTransportSolver(sim_params, phys_params)
-    times, concentrations = solver.solve()
+def latin_hypercube_sampling(n_samples: int, n_dims: int, seed: int = 42) -> np.ndarray:
+    """
+    Generate Latin Hypercube samples in [0, 1]^n_dims.
+    Provides better coverage of parameter space than random sampling.
+    """
+    np.random.seed(seed)
+    samples = np.zeros((n_samples, n_dims))
 
-    return {
-        'concentrations': concentrations,
-        'times': times,
-        'params': np.array([
-            sim_params.c_inlet,
-            phys_params.U_max,
-            phys_params.g,
-            phys_params.mu_f,
-            phys_params.d_p
+    for dim in range(n_dims):
+        # Divide [0, 1] into n_samples equal intervals
+        intervals = np.linspace(0, 1, n_samples + 1)
+        # Sample uniformly within each interval
+        for i in range(n_samples):
+            samples[i, dim] = np.random.uniform(intervals[i], intervals[i + 1])
+        # Shuffle to break correlation between dimensions
+        np.random.shuffle(samples[:, dim])
+
+    return samples
+
+
+def create_injection_pattern(
+    mode: str,
+    c_inlet: float,
+    T: float,
+    seed: int = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Create injection pattern based on mode.
+
+    Modes:
+    - 'continuous': constant injection throughout simulation
+    - 'single_pulse': inject for first portion, then stop
+    - 'multi_pulse': alternating injection on/off
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if mode == 'continuous':
+        c_in_times = np.array([T * 100])  # Effectively infinite
+        c_in_arr = np.array([c_inlet, 0.0])
+
+    elif mode == 'single_pulse':
+        # Inject for 20-60% of simulation time
+        pulse_fraction = np.random.uniform(0.2, 0.6)
+        pulse_end = T * pulse_fraction
+        c_in_times = np.array([pulse_end])
+        c_in_arr = np.array([c_inlet, 0.0])
+
+    elif mode == 'multi_pulse':
+        # 2-4 pulses
+        n_pulses = np.random.randint(2, 5)
+        pulse_duration = T / (2 * n_pulses)
+
+        c_in_times = []
+        c_in_arr = []
+
+        for i in range(n_pulses):
+            # On phase
+            c_in_times.append((2 * i + 1) * pulse_duration)
+            c_in_arr.append(c_inlet)
+            # Off phase (except last)
+            if i < n_pulses - 1:
+                c_in_times.append((2 * i + 2) * pulse_duration)
+                c_in_arr.append(0.0)
+
+        c_in_arr.append(0.0)  # Final state
+        c_in_times = np.array(c_in_times)
+        c_in_arr = np.array(c_in_arr)
+    else:
+        raise ValueError(f"Unknown injection mode: {mode}")
+
+    return c_in_times, c_in_arr
+
+
+def generate_single_sample(args: dict) -> Optional[dict]:
+    """Generate a single training sample. Used for parallel processing."""
+    try:
+        # Extract parameters
+        c_inlet = args['c_inlet']
+        Q_inlet = args['Q_inlet']
+        g = args['g']
+        mu0 = args['mu0']
+        r_particle = args['r_particle']
+        inlet_fraction = args['inlet_fraction']
+        rk_stages = args['rk_stages']
+        lim_type = args['lim_type']
+        injection_mode = args['injection_mode']
+        nx = args['nx']
+        ny = args['ny']
+        T = args['T']
+        dT = args['dT']
+        sample_idx = args['sample_idx']
+
+        # Create injection pattern
+        c_in_times, c_in_arr = create_injection_pattern(
+            injection_mode, c_inlet, T, seed=sample_idx
+        )
+
+        # Create solver
+        solver = ProppantSolver(
+            nx=nx, ny=ny,
+            Lx=60.0, Ly=30.0,
+            T=T, dT=dT,
+            c_inlet=c_inlet,
+            Q_inlet=Q_inlet,
+            g=g,
+            mu0=mu0,
+            r_particle=r_particle,
+            inlet_fraction=inlet_fraction,
+            c_in_times=c_in_times,
+            c_in_arr=c_in_arr,
+            rk_stages=rk_stages,
+            lim_type=lim_type,
+        )
+
+        # Solve
+        times, concentrations = solver.solve()
+
+        # Clip to valid range
+        concentrations = np.clip(concentrations, 0, 0.635)
+
+        # Encode categorical parameters
+        injection_mode_map = {'continuous': 0, 'single_pulse': 1, 'multi_pulse': 2}
+        lim_type_map = {'koren': 0, 'superbee': 1, 'minmod': 2, 'vanleer': 3}
+
+        # Parameters vector for FNO input - NORMALIZED to [0, 1]
+        # This is critical for training stability
+        params = np.array([
+            c_inlet / 0.5,                    # c_inlet: [0.15, 0.50] -> [0.3, 1.0]
+            Q_inlet / 0.1,                    # Q_inlet: [0.02, 0.10] -> [0.2, 1.0]
+            g / 12.0,                         # g: [0, 12] -> [0, 1]
+            mu0 / 0.01,                       # mu0: [0.0005, 0.01] -> [0.05, 1.0]
+            r_particle / 0.0005,              # r_particle: [0.0001, 0.0005] -> [0.2, 1.0]
+            inlet_fraction * 2,               # inlet_fraction: [1/6, 1/2] -> [0.33, 1.0]
+            (rk_stages - 2) / 1.0,            # rk_stages: [2, 3] -> [0, 1]
+            lim_type_map.get(lim_type, 0) / 2.0,  # lim_type: [0, 2] -> [0, 1]
+            injection_mode_map.get(injection_mode, 0) / 2.0,  # injection_mode: [0, 2] -> [0, 1]
         ], dtype=np.float32)
-    }
+
+        return {
+            'concentrations': concentrations.astype(np.float32),
+            'times': times.astype(np.float32),
+            'params': params,
+            'sample_idx': sample_idx,
+            'config': {
+                'c_inlet': c_inlet,
+                'Q_inlet': Q_inlet,
+                'g': g,
+                'mu0': mu0,
+                'r_particle': r_particle,
+                'inlet_fraction': inlet_fraction,
+                'rk_stages': rk_stages,
+                'lim_type': lim_type,
+                'injection_mode': injection_mode,
+            }
+        }
+
+    except Exception as e:
+        print(f"Sample {args.get('sample_idx', '?')} failed: {e}")
+        return None
 
 
 def generate_dataset(
     output_dir: Path,
-    n_samples: int = 500,
-    seed: int = 42
+    n_samples: int = 100,
+    seed: int = 42,
+    n_workers: int = 1,
+    grid_size: Tuple[int, int] = (60, 30),
+    T: float = 100.0,
+    dT: float = 5.0,
+    config_path: Path | None = None,
 ):
-    """
-    Generate training dataset with varied physical parameters.
-    """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    project_root = output_dir.parent.parent
 
-    np.random.seed(seed)
+    generate_simulations(max_new=n_samples, project_root=project_root, config_path=config_path)
 
-    # Fixed simulation grid
-    nx, ny = 64, 32
-    T, dt = 2.0, 0.004
-    save_every = 20
+    timeseries_dir = project_root / 'simulation_timeseries'
+    torch_dir = project_root / 'torch_data'
+    torch_path = build_torch_data(timeseries_dir, torch_dir, max_files=n_samples, sort_by_mtime=True)
 
-    metadata = {
-        'n_samples': n_samples,
-        'nx': nx,
-        'ny': ny,
-        'Lx': 2.0,
-        'Ly': 1.0,
-        'T': T,
-        'dt': dt,
-        'save_every': save_every,
-    }
-
-    with open(output_dir / 'metadata.json', 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-    for i in tqdm(range(n_samples), desc="Generating samples"):
-        # Randomize physical parameters
-        c_inlet = np.random.uniform(0.15, 0.45)
-        U_max = np.random.uniform(0.4, 1.2)
-        g = np.random.uniform(5.0, 15.0)
-        mu_f = np.random.uniform(0.005, 0.05)  # 5-50 mPa·s
-        d_p = np.random.uniform(0.0002, 0.0008)  # 200-800 μm
-
-        sim_params = SimulationParams(
-            nx=nx, ny=ny,
-            T=T, dt=dt,
-            save_every=save_every,
-            c_inlet=c_inlet
-        )
-
-        phys_params = PhysicalParams(
-            g=g,
-            mu_f=mu_f,
-            U_max=U_max,
-            d_p=d_p
-        )
-
-        sample = generate_training_sample(sim_params, phys_params)
-
-        np.savez_compressed(
-            output_dir / f'sample_{i:05d}.npz',
-            concentrations=sample['concentrations'].astype(np.float32),
-            times=sample['times'].astype(np.float32),
-            params=sample['params']
-        )
-
-    print(f"Generated {n_samples} samples in {output_dir}")
+    return build_processed_from_torch_data(output_dir, torch_path, max_samples=n_samples)
 
 
 def create_dataloaders(
     data_dir: Path,
-    batch_size: int = 16,
+    batch_size: int = 8,
     train_ratio: float = 0.8,
     num_workers: int = 0
 ) -> Tuple[DataLoader, DataLoader]:
@@ -182,14 +286,126 @@ def create_dataloaders(
     return train_loader, val_loader
 
 
+def build_processed_from_torch_data(
+    output_dir: Path,
+    torch_data_path: Path,
+    max_samples: Optional[int] = None
+) -> int:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for f in output_dir.glob("sample_*.npz"):
+        try:
+            f.unlink()
+        except Exception:
+            pass
+
+    torch_data_path = Path(torch_data_path)
+    data = torch.load(torch_data_path, map_location='cpu', weights_only=False)
+
+    Q = data['Q']
+    times = data['times']
+    params_raw = data['params']
+
+    if isinstance(Q, torch.Tensor):
+        Q = Q.detach().cpu().numpy()
+    if isinstance(times, torch.Tensor):
+        times = times.detach().cpu().numpy()
+    if isinstance(params_raw, torch.Tensor):
+        params_raw = params_raw.detach().cpu().numpy()
+
+    Q = Q.astype(np.float32, copy=False)
+    times = times.astype(np.float32, copy=False)
+    params_raw = params_raw.astype(np.float32, copy=False)
+
+    n_samples, n_times, ny, nx = Q.shape
+
+    if max_samples is not None:
+        n_keep = int(max(0, min(n_samples, max_samples)))
+        Q = Q[:n_keep]
+        times = times[:n_keep]
+        params_raw = params_raw[:n_keep]
+        n_samples = n_keep
+
+    if n_samples == 0:
+        raise ValueError("No samples selected")
+
+    w0 = params_raw[:, 1].reshape(n_samples, 1, 1, 1)
+    w0_safe = np.where(w0 == 0, 1.0, w0)
+    concentrations = Q / w0_safe
+
+    cmax = np.float32(0.635)
+    concentrations = np.clip(concentrations, 0.0, float(cmax)).astype(np.float32, copy=False)
+    concentrations = (concentrations / cmax).astype(np.float32, copy=False)
+
+    for i in range(n_samples):
+        t = times[i]
+        idx = np.where(t > 0)[0]
+        if idx.size == 0:
+            last = 0
+        else:
+            last = int(idx[-1])
+        if last < (n_times - 1):
+            times[i, last + 1:] = times[i, last]
+            concentrations[i, last + 1:] = concentrations[i, last]
+
+    param_names = ['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times', 'dT']
+    if params_raw.shape[1] != len(param_names):
+        raise ValueError(f"Expected {len(param_names)} params, got {params_raw.shape[1]}")
+
+    p_min = params_raw.min(axis=0)
+    p_max = params_raw.max(axis=0)
+    denom = (p_max - p_min)
+    denom = np.where(denom == 0, 1.0, denom)
+    params = (params_raw - p_min) / denom
+    params = params.astype(np.float32, copy=False)
+
+    for i in range(n_samples):
+        np.savez_compressed(
+            output_dir / f"sample_{i:05d}.npz",
+            concentrations=concentrations[i],
+            times=times[i],
+            params=params[i],
+            params_raw=params_raw[i],
+        )
+
+    metadata = {
+        'source': str(torch_data_path),
+        'n_samples': int(n_samples),
+        'nx': int(nx),
+        'ny': int(ny),
+        'L': 60.0,
+        'H': 60.0,
+        'cmax': float(cmax),
+        'n_times': int(n_times),
+        'Tmax': float(np.max(times)),
+        'dT': float(np.median(np.diff(times[0])) if times.shape[1] > 1 else 0.0),
+        'param_names': param_names,
+        'param_min': p_min.astype(np.float32).tolist(),
+        'param_max': p_max.astype(np.float32).tolist(),
+    }
+
+    with open(output_dir / 'metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    return n_samples
+
+
 if __name__ == '__main__':
     output_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
-    generate_dataset(output_dir, n_samples=10)
+
+    # Test with small dataset
+    generate_dataset(
+        output_dir,
+        n_samples=5,
+        grid_size=(50, 25),
+        T=80.0,
+        dT=4.0,
+    )
 
     dataset = ProppantDataset(output_dir)
     print(f"Dataset size: {len(dataset)}")
 
     sample = dataset[0]
-    print(f"c0 shape: {sample['c0'].shape}")
-    print(f"trajectory shape: {sample['trajectory'].shape}")
-    print(f"params: {sample['params']}")
+    print(f"Trajectory shape: {sample['trajectory'].shape}")
+    print(f"Params shape: {sample['params'].shape}")
+    print(f"Params: {sample['params']}")

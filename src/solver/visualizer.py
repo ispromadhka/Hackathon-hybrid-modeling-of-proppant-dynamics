@@ -59,7 +59,9 @@ def create_contour_plot(Q_frame, w0, times, time_idx, L=60, H=60):
         z=c,
         x=x,
         y=y,
-        colorscale='Viridis',
+        colorscale='Turbo',
+        zmin=0,
+        zmax=float(w0),
         contours=dict(coloring='heatmap', showlines=False),
         colorbar=dict(title='c', titleside='right', thickness=15)
     ))
@@ -70,9 +72,9 @@ def create_contour_plot(Q_frame, w0, times, time_idx, L=60, H=60):
             x=0.5,
             font=dict(size=16)
         ),
-        xaxis=dict(title='x', dtick=10),
+        xaxis=dict(title='x'),
         yaxis=dict(title='y', dtick=10, scaleanchor='x', scaleratio=1),
-        margin=dict(l=60, r=30, t=80, b=80),
+        margin=dict(l=50, r=30, t=70, b=60),
         height=600
     )
 

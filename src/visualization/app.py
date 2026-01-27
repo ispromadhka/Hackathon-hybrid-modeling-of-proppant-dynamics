@@ -1,215 +1,426 @@
-"""
-Proppant Transport Simulator - Injection from left boundary.
-"""
-
+import json
 import dash
-from dash import dcc, html, callback, Input, Output, State
+from dash import dcc, html, callback, Input, Output, State, ctx
 import plotly.graph_objects as go
 import numpy as np
 from pathlib import Path
-import time
+import warnings
+import torch
+warnings.filterwarnings('ignore')
+import torch.nn.functional as F
+import pandas as pd
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.solver.proppant_transport import (
-    SimulationParams,
-    PhysicalParams,
-    ProppantTransportSolver,
-)
+from src.model.fno import create_model
+from src.solver.generation import generate_for_params, load_generation_config
+from src.solver.to_torch import build_torch_data
+from src.training.dataset import build_processed_from_torch_data
+
+ROOT = Path(__file__).parent.parent.parent
+DATA_DIR = ROOT / 'data' / 'processed'
+CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
+CSV_PATH = ROOT / 'simulation_results.csv'
+CONFIG_PATH = ROOT / 'configs' / 'default.json'
+
+MODEL = None
+DATA_META = None
+SAMPLE_FILES = []
+DF_INDEX = None
+
+
+def load_data_index():
+    global DATA_META, SAMPLE_FILES
+    meta_path = DATA_DIR / 'metadata.json'
+    if not meta_path.exists():
+        DATA_META = None
+        SAMPLE_FILES = []
+        return
+    with open(meta_path) as f:
+        DATA_META = json.load(f)
+    SAMPLE_FILES = sorted(DATA_DIR.glob('sample_*.npz'))
+
+
+def load_sim_index():
+    global DF_INDEX
+    if not CSV_PATH.exists():
+        DF_INDEX = pd.DataFrame(columns=['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times', 'dT', 'timeseries_path'])
+        return
+    DF_INDEX = pd.read_csv(CSV_PATH)
+
+
+def load_model():
+    global MODEL
+    if not CHECKPOINT_PATH.exists():
+        MODEL = None
+        return
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
+
+    if 'grid_x' in state_dict:
+        grid_shape = state_dict['grid_x'].shape
+        nx = grid_shape[2]
+        ny = grid_shape[3]
+    else:
+        nx = int(DATA_META.get('nx', 64)) if DATA_META else 64
+        ny = int(DATA_META.get('ny', 32)) if DATA_META else 32
+
+    if 'lift.weight' in state_dict:
+        in_channels = state_dict['lift.weight'].shape[1]
+        n_params = in_channels - 2
+    else:
+        n_params = int(len(DATA_META.get('param_names', []))) if DATA_META else 7
+
+    if 'project.2.weight' in state_dict:
+        n_times = state_dict['project.2.weight'].shape[0]
+    else:
+        n_times = int(DATA_META.get('n_times', 26)) if DATA_META else 26
+
+    MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device)
+    MODEL.load_state_dict(state_dict, strict=False)
+    MODEL.eval()
+
+
+def create_empty_figure(title, message):
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper", yref="paper",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=14, color='#7f8c8d')
+    )
+    fig.update_layout(
+        title=dict(text=title, x=0.5, font=dict(size=11)),
+        margin=dict(l=50, r=80, t=30, b=50)
+    )
+    return fig
+
+
+def create_contour(z, x, y, title, zmax):
+    fig = go.Figure(
+        data=[go.Contour(
+            z=np.clip(z, 0, zmax),
+            x=x, y=y,
+            colorscale='Turbo',
+            zmin=0, zmax=zmax,
+            contours=dict(coloring='heatmap', showlines=False),
+            ncontours=60,
+            colorbar=dict(title=dict(text='c', side='right'), thickness=12)
+        )]
+    )
+    fig.update_layout(
+        title=dict(text=title, x=0.5, font=dict(size=11)),
+        xaxis=dict(title='x', constrain='domain'),
+        yaxis=dict(title='y', scaleanchor='x', scaleratio=1),
+        margin=dict(l=45, r=20, t=35, b=35),
+        height=560
+    )
+    return fig
+
+
+load_data_index()
+load_sim_index()
+if DATA_META:
+    DOMAIN_LX = float(DATA_META.get('L', 60.0))
+    DOMAIN_LY = float(DATA_META.get('H', 60.0))
+    NX = int(DATA_META.get('nx', 100))
+    NY = int(DATA_META.get('ny', 100))
+    NT = int(DATA_META.get('n_times', 1))
+    CMAX = float(DATA_META.get('cmax', 0.635))
+    DT_CONST = float(DATA_META.get('dT', 0.0))
+    TMAX_CONST = float(DATA_META.get('Tmax', 0.0))
+else:
+    DOMAIN_LX = 60.0
+    DOMAIN_LY = 60.0
+    NX = 100
+    NY = 100
+    NT = 1
+    CMAX = 0.635
+    DT_CONST = 0.0
+    TMAX_CONST = 0.0
+
+load_model()
+
+x_grid = np.linspace(0, DOMAIN_LX, NX, endpoint=False) + DOMAIN_LX / NX / 2
+y_grid = np.linspace(0, DOMAIN_LY, NY, endpoint=False) + DOMAIN_LY / NY / 2
+
+
+def _available_values(df: pd.DataFrame, name: str, selected: dict):
+    if df is None or df.empty:
+        return []
+    d = df
+    for k, v in selected.items():
+        if v is not None and k in d.columns:
+            d = d[d[k] == v]
+    if d.empty or name not in d.columns:
+        return []
+    vals = sorted(d[name].unique().tolist())
+    return vals
+
+
+def _norm_params(raw: np.ndarray):
+    if DATA_META is None:
+        return raw.astype(np.float32)
+    pmin = np.array(DATA_META.get('param_min', [0] * len(raw)), dtype=np.float32)
+    pmax = np.array(DATA_META.get('param_max', [1] * len(raw)), dtype=np.float32)
+    denom = pmax - pmin
+    denom = np.where(denom == 0, 1.0, denom)
+    x = (raw.astype(np.float32) - pmin) / denom
+    x = np.clip(x, 0.0, 1.0)
+    return x.astype(np.float32)
+
 
 app = dash.Dash(__name__, title="Proppant Simulator")
 
 app.layout = html.Div([
-    html.H1("Proppant Transport Simulator",
-            style={'textAlign': 'center', 'padding': '15px', 'backgroundColor': '#2c3e50',
-                   'color': 'white', 'margin': '0'}),
-
+    html.H1("Proppant Transport: Model vs Dataset",
+            style={'textAlign': 'center', 'padding': '12px', 'backgroundColor': '#2c3e50',
+                   'color': 'white', 'margin': '0', 'fontSize': '22px'}),
     html.Div([
-        # Controls panel
         html.Div([
-            html.H4("Injection", style={'color': '#2c3e50'}),
-
-            html.Label("Inlet Concentration c₀", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='c_inlet', min=0.1, max=0.5, value=0.35, step=0.05,
-                      marks={0.1: '0.1', 0.25: '0.25', 0.4: '0.4', 0.5: '0.5'}),
-
-            html.Hr(),
-            html.H4("Flow", style={'color': '#2c3e50'}),
-
-            html.Label("Max Velocity [m/s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='U_max', min=0.2, max=1.5, value=0.8, step=0.1,
-                      marks={0.2: '0.2', 0.5: '0.5', 1.0: '1.0', 1.5: '1.5'}),
-
-            html.Hr(),
-            html.H4("Physics", style={'color': '#2c3e50'}),
-
-            html.Label("Gravity [m/s²]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='gravity', min=0, max=15, value=9.81, step=0.5,
-                      marks={0: '0', 5: '5', 10: '10', 15: '15'}),
-
-            html.Label("Viscosity [mPa·s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='viscosity', min=5, max=100, value=10, step=5,
-                      marks={5: '5', 25: '25', 50: '50', 100: '100'}),
-
-            html.Label("Particle Diameter [μm]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='d_p', min=200, max=800, value=400, step=50,
-                      marks={200: '200', 400: '400', 600: '600', 800: '800'}),
-
+            html.H4("Parameters", style={'color': '#2c3e50', 'marginTop': '0'}),
+            html.Label("c_in"),
+            dcc.Dropdown(id='c_in', options=[], value=None),
+            html.Label("w0"),
+            dcc.Dropdown(id='w0', options=[], value=None),
+            html.Label("mu0"),
+            dcc.Dropdown(id='mu0', options=[], value=None),
+            html.Label("Q"),
+            dcc.Dropdown(id='Q', options=[], value=None),
+            html.Label("chi"),
+            dcc.Dropdown(id='chi', options=[], value=None),
+            html.Label("c_in_times"),
+            dcc.Dropdown(id='c_in_times', options=[], value=None),
             html.Br(),
-            html.Button('RUN SIMULATION', id='run-btn', n_clicks=0,
-                       style={'width': '100%', 'padding': '18px', 'fontSize': '18px',
-                              'backgroundColor': '#27ae60', 'color': 'white',
-                              'border': 'none', 'borderRadius': '8px', 'cursor': 'pointer',
-                              'fontWeight': 'bold', 'marginTop': '10px'}),
-
-            html.Div(id='info', style={'marginTop': '15px', 'padding': '12px',
-                                        'backgroundColor': '#ecf0f1', 'borderRadius': '5px',
-                                        'fontSize': '14px'})
-
-        ], style={'width': '300px', 'padding': '20px', 'backgroundColor': '#f8f9fa',
+            html.Button('Generate', id='gen-btn', n_clicks=0,
+                        style={'width': '100%', 'padding': '10px', 'fontSize': '14px',
+                               'backgroundColor': '#27ae60', 'color': 'white',
+                               'border': 'none', 'borderRadius': '8px', 'cursor': 'pointer',
+                               'fontWeight': 'bold'}),
+            html.Br(),
+            html.Br(),
+            html.Label("Time", style={'fontWeight': 'bold'}),
+            dcc.Slider(
+                id='time_idx',
+                min=0,
+                max=max(NT - 1, 0),
+                value=0,
+                step=1,
+                marks=None,
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            html.Div(id='meta-info', style={'marginTop': '10px', 'padding': '10px',
+                                           'backgroundColor': '#ecf0f1', 'borderRadius': '5px'}),
+        ], style={'width': '360px', 'padding': '15px', 'backgroundColor': '#f8f9fa',
                   'borderRight': '2px solid #ddd', 'overflowY': 'auto'}),
-
-        # Plot area
         html.Div([
-            dcc.Graph(id='plot', style={'height': '88vh'})
-        ], style={'flex': '1', 'padding': '10px'})
-
-    ], style={'display': 'flex', 'height': 'calc(100vh - 60px)'})
+            html.Div([
+                html.H3("Model", style={'color': '#3498db', 'margin': '0'}),
+                dcc.Graph(id='nn-plot', style={'height': '42vh'})
+            ], style={'padding': '2px'}),
+            html.Div([
+                html.H3("Solver", style={'color': '#e74c3c', 'margin': '0'}),
+                dcc.Graph(id='gt-plot', style={'height': '42vh'})
+            ], style={'padding': '2px'}),
+        ], style={'flex': '1', 'padding': '3px', 'overflowY': 'auto'})
+    ], style={'display': 'flex', 'height': 'calc(100vh - 50px)'})
 ], style={'fontFamily': 'Segoe UI, Arial, sans-serif', 'margin': '0', 'padding': '0'})
 
 
 @callback(
-    [Output('plot', 'figure'), Output('info', 'children')],
-    Input('run-btn', 'n_clicks'),
-    [State('c_inlet', 'value'), State('U_max', 'value'),
-     State('gravity', 'value'), State('viscosity', 'value'), State('d_p', 'value')],
-    prevent_initial_call=True
+    [
+        Output('c_in', 'options'), Output('c_in', 'value'),
+        Output('w0', 'options'), Output('w0', 'value'),
+        Output('mu0', 'options'), Output('mu0', 'value'),
+        Output('Q', 'options'), Output('Q', 'value'),
+        Output('chi', 'options'), Output('chi', 'value'),
+        Output('c_in_times', 'options'), Output('c_in_times', 'value'),
+        Output('time_idx', 'max'), Output('time_idx', 'value'),
+        Output('nn-plot', 'figure'), Output('gt-plot', 'figure'),
+        Output('meta-info', 'children')
+    ],
+    [
+        Input('c_in', 'value'),
+        Input('w0', 'value'),
+        Input('mu0', 'value'),
+        Input('Q', 'value'),
+        Input('chi', 'value'),
+        Input('c_in_times', 'value'),
+        Input('time_idx', 'value'),
+        Input('gen-btn', 'n_clicks'),
+    ],
+    prevent_initial_call=False
 )
-def run_sim(n, c_inlet, U_max, gravity, viscosity, d_p):
-    # Physical parameters
-    phys = PhysicalParams(
-        g=gravity,
-        mu_f=viscosity * 0.001,  # mPa·s to Pa·s
-        U_max=U_max,
-        d_p=d_p * 1e-6  # μm to m
-    )
+def update_plots(c_in, w0, mu0, Q, chi, c_in_times, time_idx, n_clicks):
+    global DATA_META, SAMPLE_FILES, DF_INDEX, MODEL, NX, NY, NT, CMAX, DT_CONST, TMAX_CONST, x_grid, y_grid
 
-    # Simulation parameters
-    sim = SimulationParams(
-        nx=120, ny=60,
-        T=2.5, dt=0.002,
-        save_every=20,
-        c_inlet=c_inlet
-    )
+    dT_fixed = DT_CONST
+    try:
+        gen_cfg = load_generation_config(CONFIG_PATH, ROOT)
+        dts = gen_cfg.get('params', {}).get('dT_values', [])
+        if isinstance(dts, list) and len(dts) == 1:
+            dT_fixed = float(dts[0])
+    except Exception:
+        pass
+    if DF_INDEX is not None and not DF_INDEX.empty and 'dT' in DF_INDEX.columns:
+        uniq_dt = sorted(DF_INDEX['dT'].dropna().unique().tolist())
+        if len(uniq_dt) == 1:
+            dT_fixed = float(uniq_dt[0])
 
-    solver = ProppantTransportSolver(sim, phys)
+    if ctx.triggered_id == 'gen-btn':
+        if None not in (c_in, w0, mu0, Q, chi, c_in_times):
+            params = (float(c_in), float(w0), float(mu0), float(Q), float(chi), float(c_in_times), float(dT_fixed))
+            generate_for_params([params], project_root=ROOT, config_path=CONFIG_PATH)
+            torch_path = build_torch_data(ROOT / 'simulation_timeseries', ROOT / 'torch_data', max_files=None)
+            build_processed_from_torch_data(DATA_DIR, torch_path, max_samples=None)
+            load_data_index()
+            load_sim_index()
+            load_model()
+            if DATA_META:
+                NX = int(DATA_META.get('nx', NX))
+                NY = int(DATA_META.get('ny', NY))
+                NT = int(DATA_META.get('n_times', NT))
+                CMAX = float(DATA_META.get('cmax', CMAX))
+                DT_CONST = float(DATA_META.get('dT', DT_CONST))
+                TMAX_CONST = float(DATA_META.get('Tmax', TMAX_CONST))
+            x_grid = np.linspace(0, DOMAIN_LX, NX, endpoint=False) + DOMAIN_LX / NX / 2
+            y_grid = np.linspace(0, DOMAIN_LY, NY, endpoint=False) + DOMAIN_LY / NY / 2
 
-    # Solve (empty initial condition, inject from left)
-    t0 = time.perf_counter()
-    times, traj = solver.solve()
-    elapsed = (time.perf_counter() - t0) * 1000
+    df = DF_INDEX
+    selected = {}
 
-    # Color scale limits
-    c_min, c_max = 0, min(0.7, traj.max() * 1.1)
+    vals_c = _available_values(df, 'c_in', selected)
+    if c_in not in vals_c:
+        c_in = vals_c[0] if vals_c else None
+    selected['c_in'] = c_in
 
-    # Build frames
-    frames = []
-    for i in range(len(times)):
-        frames.append(go.Frame(
-            data=[go.Contour(
-                z=traj[i].T,
-                x=solver.x,
-                y=solver.y,
-                colorscale='Viridis',
-                zmin=c_min, zmax=c_max,
-                contours=dict(coloring='heatmap', showlines=False),
-                showscale=(i == 0),
-                colorbar=dict(title='c', titleside='right') if i == 0 else None
-            )],
-            name=str(i)
-        ))
+    vals_w = _available_values(df, 'w0', selected)
+    if w0 not in vals_w:
+        w0 = vals_w[0] if vals_w else None
+    selected['w0'] = w0
 
-    # Initial figure
-    fig = go.Figure(
-        data=[go.Contour(
-            z=traj[0].T,
-            x=solver.x,
-            y=solver.y,
-            colorscale='Viridis',
-            zmin=c_min, zmax=c_max,
-            contours=dict(coloring='heatmap', showlines=False),
-            colorbar=dict(title='c', titleside='right', thickness=15)
-        )],
-        frames=frames
-    )
+    vals_mu = _available_values(df, 'mu0', selected)
+    if mu0 not in vals_mu:
+        mu0 = vals_mu[0] if vals_mu else None
+    selected['mu0'] = mu0
 
-    # Layout
-    fig.update_layout(
-        title=dict(
-            text=f"Proppant Injection | c₀={c_inlet} | g={gravity} m/s² | μ={viscosity} mPa·s",
-            x=0.5, font=dict(size=16)
-        ),
-        xaxis=dict(range=[0, 2], title='x [m]', dtick=0.5),
-        yaxis=dict(range=[0, 1], title='y [m]', scaleanchor='x', scaleratio=0.5, dtick=0.2),
-        updatemenus=[{
-            'type': 'buttons',
-            'showactive': True,
-            'y': 1.15, 'x': 0.5, 'xanchor': 'center',
-            'buttons': [
-                {
-                    'label': '▶ Play',
-                    'method': 'animate',
-                    'args': [None, {
-                        'frame': {'duration': 50, 'redraw': True},
-                        'fromcurrent': True,
-                        'transition': {'duration': 20}
-                    }]
-                },
-                {
-                    'label': '⏸ Pause',
-                    'method': 'animate',
-                    'args': [[None], {'frame': {'duration': 0}, 'mode': 'immediate'}]
-                },
-                {
-                    'label': '⟲ Reset',
-                    'method': 'animate',
-                    'args': [['0'], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate'}]
-                }
-            ]
-        }],
-        sliders=[{
-            'active': 0,
-            'pad': {'t': 60, 'b': 10},
-            'len': 0.9, 'x': 0.05, 'y': 0,
-            'currentvalue': {
-                'prefix': 't = ',
-                'suffix': ' s',
-                'visible': True,
-                'xanchor': 'center',
-                'font': {'size': 14}
-            },
-            'steps': [
-                {
-                    'args': [[str(i)], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate'}],
-                    'label': f'{times[i]:.2f}',
-                    'method': 'animate'
-                }
-                for i in range(len(times))
-            ]
-        }],
-        margin=dict(l=60, r=30, t=80, b=80)
-    )
+    vals_Q = _available_values(df, 'Q', selected)
+    if Q not in vals_Q:
+        Q = vals_Q[0] if vals_Q else None
+    selected['Q'] = Q
 
-    info_content = [
-        html.Span(f"✓ Computed in {elapsed:.0f} ms", style={'color': '#27ae60', 'fontWeight': 'bold'}),
-        html.Br(),
-        html.Span(f"{len(times)} frames | {sim.nx}×{sim.ny} grid"),
-        html.Br(),
-        html.Span(f"c_max = {traj.max():.3f}")
+    vals_chi = _available_values(df, 'chi', selected)
+    if chi not in vals_chi:
+        chi = vals_chi[0] if vals_chi else None
+    selected['chi'] = chi
+
+    vals_t = _available_values(df, 'c_in_times', selected)
+    if c_in_times not in vals_t:
+        c_in_times = vals_t[0] if vals_t else None
+    selected['c_in_times'] = c_in_times
+
+    c_in_opts = [{'label': str(v), 'value': v} for v in vals_c]
+    w0_opts = [{'label': str(v), 'value': v} for v in vals_w]
+    mu0_opts = [{'label': str(v), 'value': v} for v in vals_mu]
+    Q_opts = [{'label': str(v), 'value': v} for v in vals_Q]
+    chi_opts = [{'label': str(v), 'value': v} for v in vals_chi]
+    t_opts = [{'label': str(v), 'value': v} for v in vals_t]
+
+    fig_empty = create_empty_figure("No data", "Run: python app.py --generate")
+    fig_nn = create_empty_figure("Model", "No trained model. Run: python app.py --train")
+    fig_gt = fig_empty
+    meta_lines = [
+        html.Div(f"Nx={NX}, Ny={NY}"),
+        html.Div(f"Tmax={TMAX_CONST:.0f}, dT={DT_CONST:.3f}"),
+        html.Div(f"dT (generation) = {dT_fixed:g}"),
     ]
 
-    return fig, info_content
+    if None in (c_in, w0, mu0, Q, chi, c_in_times) or df is None or df.empty:
+        return (
+            c_in_opts, c_in, w0_opts, w0, mu0_opts, mu0, Q_opts, Q, chi_opts, chi, t_opts, c_in_times,
+            max(NT - 1, 0), 0,
+            fig_nn, fig_gt, meta_lines
+        )
+
+    row = df[
+        (df['c_in'] == c_in) &
+        (df['w0'] == w0) &
+        (df['mu0'] == mu0) &
+        (df['Q'] == Q) &
+        (df['chi'] == chi) &
+        (df['c_in_times'] == c_in_times)
+    ]
+    if row.empty:
+        meta_lines.append(html.Hr(style={'margin': '8px 0'}))
+        meta_lines.append(html.Div("No simulation. Click Generate."))
+        return (
+            c_in_opts, c_in, w0_opts, w0, mu0_opts, mu0, Q_opts, Q, chi_opts, chi, t_opts, c_in_times,
+            max(NT - 1, 0), 0,
+            fig_nn, fig_gt, meta_lines
+        )
+
+    ts_path = str(row.iloc[0]['timeseries_path'])
+    ts_file = ROOT / ts_path
+    if not ts_file.exists():
+        meta_lines.append(html.Hr(style={'margin': '8px 0'}))
+        meta_lines.append(html.Div("Timeseries file missing. Click Generate."))
+        return (
+            c_in_opts, c_in, w0_opts, w0, mu0_opts, mu0, Q_opts, Q, chi_opts, chi, t_opts, c_in_times,
+            max(NT - 1, 0), 0,
+            fig_nn, fig_gt, meta_lines
+        )
+
+    d = np.load(ts_file, allow_pickle=True)
+    Q_series = d['Q'].astype(np.float32)
+    t_series = d['times'].astype(np.float32)
+    conc = Q_series / np.float32(w0)
+    conc = np.clip(conc, 0.0, np.float32(CMAX))
+
+    tmax_idx = int(conc.shape[0] - 1)
+    if time_idx is None:
+        time_idx = 0
+    if int(time_idx) < 0:
+        time_idx = 0
+    if int(time_idx) > tmax_idx:
+        time_idx = tmax_idx
+    k = int(time_idx)
+
+    gt_frame = conc[k]
+    zmax = float(c_in)
+    fig_gt = create_contour(gt_frame, x_grid, y_grid, f"Solver t={t_series[k]:.2f}", zmax)
+
+    if MODEL is not None and int(getattr(MODEL, 'n_params', -1)) == 7 and DATA_META is not None:
+        raw = np.array([c_in, w0, mu0, Q, chi, c_in_times, dT_fixed], dtype=np.float32)
+        p = _norm_params(raw)
+        device = next(MODEL.parameters()).device
+        inp = torch.from_numpy(p.reshape(1, -1)).to(device).float()
+        with torch.no_grad():
+            pred = MODEL(inp)[0].detach().cpu().numpy()
+        pred = pred.transpose(0, 2, 1).astype(np.float32)
+        if pred.shape[1:] != conc.shape[1:]:
+            pt = torch.from_numpy(pred).unsqueeze(0)
+            pt = F.interpolate(pt, size=conc.shape[1:], mode='bilinear', align_corners=False)
+            pred = pt[0].numpy().astype(np.float32)
+        pred = pred * np.float32(CMAX)
+        n_common = min(pred.shape[0], conc.shape[0])
+        pred = pred[:n_common]
+        conc_c = conc[:n_common]
+        nn_frame = pred[min(k, n_common - 1)]
+        zmax_nn = float(c_in)
+        fig_nn = create_contour(nn_frame, x_grid, y_grid, f"NN t={t_series[min(k, n_common - 1)]:.2f}", zmax_nn)
+
+    meta_lines.extend([
+        html.Hr(style={'margin': '8px 0'}),
+        html.Div(f"c_in={c_in} w0={w0} mu0={mu0} Q={Q} chi={chi} c_in_times={c_in_times} dT={dT_fixed:g}"),
+        html.Div(f"frame={k}/{tmax_idx}, t={t_series[k]:.2f}"),
+    ])
+    return (
+        c_in_opts, c_in, w0_opts, w0, mu0_opts, mu0, Q_opts, Q, chi_opts, chi, t_opts, c_in_times,
+        tmax_idx, k,
+        fig_nn, fig_gt, meta_lines
+    )
 
 
 def run_app(debug=True, port=8050):

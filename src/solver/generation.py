@@ -7,51 +7,95 @@ import itertools
 import hashlib
 import warnings
 warnings.filterwarnings('ignore')
+from pathlib import Path
+import json
 
-module_path = os.path.abspath('../')
-if module_path not in sys.path:
-    sys.path.append(module_path)
+_solver_dir = Path(__file__).parent
+if str(_solver_dir) not in sys.path:
+    sys.path.append(str(_solver_dir))
 from CPU_solver.SystemSolverCPU import SolverCPU
 
-os.makedirs('simulation_data', exist_ok=True)
-os.makedirs('simulation_timeseries', exist_ok=True)
-csv_path = 'simulation_results.csv'
+def load_generation_config(config_path: Path | None = None, project_root: Path | None = None) -> dict:
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.parent
+    if config_path is None:
+        config_path = Path(project_root) / 'configs' / 'default.json'
+    config_path = Path(config_path)
+    cfg = {}
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+    gen = cfg.get('solver_generation', {})
+    if not gen:
+        gen = {
+            'seed': 42,
+            'grid': {'L': 60.0, 'H': 60.0, 'Nx': 100, 'Ny': 100, 'Tmax': 400.0},
+            'params': {
+                'c_in': {'min': 0.05, 'max': 0.45, 'step': 0.05},
+                'w0': {'min': 0.01, 'max': 0.03, 'step': 0.005},
+                'mu0': {'min': 0.001, 'max': 0.1, 'step': 0.005},
+                'Q': {'min': -0.5, 'max': -0.01, 'step': 0.05},
+                'chi': {'min': 15.0, 'max': 30.0, 'step': 3.0},
+                'c_in_times': {'min': 50.0, 'max': 200.0, 'step': 25.0},
+                'dT_values': [2.0],
+            },
+            'numerics': {
+                'CFL': 0.8, 'rk_stages': 3, 'lim_type': 'koren', 'kappa': -1,
+                'WENO_type': 'Z', 'use_WENO': False, 'prefer_CG': True,
+                'prefer_async_CG': True, 'async_check_interval': 1,
+                'eps': 1e-10, 'max_iter': 100000
+            },
+            'physics': {'beta': 2.5, 'mu0': None, 'cmax': 0.635, 'rho1': 1e3, 'rho2': 2.7e3, 'g': 0.0, 'r': 0.0},
+            'boundary': {'c_in_times_tail': [150.0], 'c_in_arr_tail': [0.0, 0.1]},
+        }
+    return gen
 
-if os.path.exists(csv_path):
-    df_existing = pd.read_csv(csv_path)
-    existing_hashes = set(df_existing['param_hash'].tolist())
-else:
-    df_existing = pd.DataFrame()
-    existing_hashes = set()
 
-L, H = 60, 60
-Nx = Ny = 100
-Tmax = 400
+def _values_from_spec(spec):
+    if spec is None:
+        return []
+    if isinstance(spec, list):
+        return spec
+    if isinstance(spec, dict) and 'values' in spec:
+        return spec['values']
+    if isinstance(spec, dict) and all(k in spec for k in ('min', 'max', 'step')):
+        mn = float(spec['min'])
+        mx = float(spec['max'])
+        st = float(spec['step'])
+        if st == 0:
+            return [mn]
+        n = int(np.floor((mx - mn) / st + 1e-9)) + 1
+        vals = [mn + i * st for i in range(n)]
+        if vals and vals[-1] < mx - 1e-9:
+            vals.append(mx)
+        return vals
+    return []
 
-c_min, c_max, c_step = 0.05, 0.45, 0.05
-w_min, w_max, w_step = 0.01, 0.03, 0.005
-mu_min, mu_max, mu_step = 0.001, 0.1, 0.005
-q_min, q_max, q_step = 0.01, 0.5, 0.05
-chi_min, chi_max, chi_step = 15, 30, 3
-time_min, time_max, time_step = 50, 200, 25
-dT_values = [2]
 
-c_in = np.arange(c_min, c_max + c_step/2, c_step)
-w0 = np.arange(w_min, w_max + w_step/2, w_step)
-mu0 = np.arange(mu_min, mu_max + mu_step/2, mu_step)
-Q = -np.arange(q_min, q_max + q_step/2, q_step)
-chi = np.arange(chi_min, chi_max + chi_step/2, chi_step)
-c_in_times_list = np.arange(time_min, time_max + time_step/2, time_step)
-
-param_combinations = list(itertools.product(c_in, w0, mu0, Q, chi, c_in_times_list, dT_values))
+def build_param_combinations(gen_cfg: dict) -> list[tuple]:
+    p = gen_cfg.get('params', {})
+    c_in = _values_from_spec(p.get('c_in'))
+    w0 = _values_from_spec(p.get('w0'))
+    mu0 = _values_from_spec(p.get('mu0'))
+    Q = _values_from_spec(p.get('Q'))
+    chi = _values_from_spec(p.get('chi'))
+    c_in_times = _values_from_spec(p.get('c_in_times'))
+    dT_values = p.get('dT_values', [])
+    return list(itertools.product(c_in, w0, mu0, Q, chi, c_in_times, dT_values))
 
 def get_param_hash(params):
     param_str = '_'.join(f'{p:.6f}' if isinstance(p, float) else f'{p:.1f}' for p in params)
     return hashlib.md5(param_str.encode()).hexdigest()
 
-def run_simulation(params):
+def run_simulation(params, gen_cfg: dict):
     c_in_val, w0_val, mu0_val, Q_val, chi_val, c_in_times_val, dT_val = params
 
+    grid = gen_cfg.get('grid', {})
+    L = float(grid.get('L', 60.0))
+    H = float(grid.get('H', 60.0))
+    Nx = int(grid.get('Nx', 100))
+    Ny = int(grid.get('Ny', 100))
+    Tmax = float(grid.get('Tmax', 400.0))
     x = np.linspace(0, L, Nx, endpoint=False) + L/Nx/2
     y = np.linspace(0, H, Ny, endpoint=False) + H/Ny/2
 
@@ -59,29 +103,44 @@ def run_simulation(params):
     q_in = (q_in + q_in[::-1]) / 2
     q_out = -np.mean(q_in)
 
+    numerics = gen_cfg.get('numerics', {})
+    physics = gen_cfg.get('physics', {})
+    boundary = gen_cfg.get('boundary', {})
+    c_in_times_tail = boundary.get('c_in_times_tail', [])
+    c_in_arr_tail = boundary.get('c_in_arr_tail', [])
+    c_in_times = np.array([float(c_in_times_val)] + [float(v) for v in c_in_times_tail], dtype=float)
+    c_in_arr = np.array([float(c_in_val)] + [float(v) for v in c_in_arr_tail], dtype=float)
+
     config = {
         'grid': {'Tmax': Tmax, 'Ny': Ny, 'Nx': Nx, 'L': L, 'H': H, 'dT': dT_val},
         'physics': {
             'c0': np.zeros((Ny, Nx)),
             'w': w0_val * np.ones((Ny, Nx)),
-            'beta': 2.5,
+            'beta': float(physics.get('beta', 2.5)),
             'mu0': mu0_val,
-            'cmax': 0.635,
-            'rho1': 1e3,
-            'rho2': 2.7e3,
-            'g': 0,
-            'r': 0
+            'cmax': float(physics.get('cmax', 0.635)),
+            'rho1': float(physics.get('rho1', 1e3)),
+            'rho2': float(physics.get('rho2', 2.7e3)),
+            'g': float(physics.get('g', 0.0)),
+            'r': float(physics.get('r', 0.0))
         },
         'numerics': {
-            'CFL': 0.8, 'rk_stages': 2, 'lim_type': 'koren', 'kappa': -1,
-            'WENO_type': 'Z', 'use_WENO': False, 'prefer_CG': True,
-            'prefer_async_CG': True, 'async_check_interval': 1,
-            'eps': 1e-10, 'max_iter': 100000
+            'CFL': float(numerics.get('CFL', 0.8)),
+            'rk_stages': int(numerics.get('rk_stages', 3)),
+            'lim_type': str(numerics.get('lim_type', 'koren')),
+            'kappa': float(numerics.get('kappa', -1)),
+            'WENO_type': str(numerics.get('WENO_type', 'Z')),
+            'use_WENO': bool(numerics.get('use_WENO', False)),
+            'prefer_CG': bool(numerics.get('prefer_CG', True)),
+            'prefer_async_CG': bool(numerics.get('prefer_async_CG', True)),
+            'async_check_interval': int(numerics.get('async_check_interval', 1)),
+            'eps': float(numerics.get('eps', 1e-10)),
+            'max_iter': int(numerics.get('max_iter', 100000)),
         },
         'boundary_conditions': {
             'q_in': q_in, 'q_out': q_out,
-            'c_in_times': np.array([c_in_times_val, 150]),
-            'c_in_arr': np.array([c_in_val, 0.0, 0.1])
+            'c_in_times': c_in_times,
+            'c_in_arr': c_in_arr
         }
     }
 
@@ -148,81 +207,209 @@ def compute_time_averages(time_metrics):
         avg_metrics[f'time_std_{key}'] = np.std(values)
     return avg_metrics
 
-new_results = []
+def generate_simulations(max_new: int | None = None, project_root: Path | None = None, config_path: Path | None = None) -> int:
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.parent
+    project_root = Path(project_root)
+    gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
+    param_combinations = build_param_combinations(gen_cfg)
 
-new_simulations = []
-for params in param_combinations:
-    param_hash = get_param_hash(params)
-    if param_hash not in existing_hashes:
-        new_simulations.append(params)
+    sim_data_dir = project_root / 'simulation_data'
+    sim_ts_dir = project_root / 'simulation_timeseries'
+    sim_data_dir.mkdir(parents=True, exist_ok=True)
+    sim_ts_dir.mkdir(parents=True, exist_ok=True)
 
-total_new = len(new_simulations)
-print(f"Total simulations to generate: {total_new}")
-print(f"Already existing: {len(existing_hashes)}")
-print(f"Total combinations: {len(param_combinations)}")
-print()
+    csv_path = project_root / 'simulation_results.csv'
 
-if total_new == 0:
-    print("No new simulations to run.")
-    df_final = df_existing
-else:
-    for idx, params in enumerate(tqdm(new_simulations, desc="Generating simulations", total=total_new), 1):
-        param_hash = get_param_hash(params)
-
-        try:
-            s, time_series_data, time_stamps = run_simulation(params)
-
-            param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
-
-            ts_path = save_time_series(time_series_data, time_stamps, param_str)
-
-            time_metrics = calculate_metrics(time_series_data, s.w)
-            time_stats = compute_time_averages(time_metrics) if time_metrics else {}
-
-            final_frame = time_series_data[-1]
-            if np.max(s.w) > 0:
-                final_c = final_frame / s.w
-            else:
-                final_c = final_frame
-            final_metrics = {
-                'final_mean': np.mean(final_c),
-                'final_std': np.std(final_c),
-                'final_max': np.max(final_c),
-                'final_min': np.min(final_c),
-                'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
-            }
-
-            matrix_path = f'simulation_data/{param_str}_final.npy'
-            np.save(matrix_path, final_frame)
-
-            result = {
-                'c_in': params[0], 'w0': params[1], 'mu0': params[2],
-                'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
-                'dT': params[6], 'param_hash': param_hash,
-                'matrix_path': matrix_path, 'timeseries_path': ts_path,
-                'total_steps': len(time_series_data),
-                'frames_count': len(time_series_data),
-                'max_time': time_stamps[-1] if time_stamps else 0.0
-            }
-
-            result.update(time_stats)
-            result.update(final_metrics)
-            new_results.append(result)
-
-            df_new = pd.DataFrame(new_results)
-            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-            df_combined.to_csv(csv_path, index=False)
-
-        except Exception as e:
-            print(f"Failed for params {params}: {str(e)}")
-            continue
-
-        df_final = pd.concat([df_existing, pd.DataFrame(new_results)], ignore_index=True)
-        df_final.to_csv(csv_path, index=False)
-        print(f"\nAdded {len(new_results)} new simulations. Total: {len(df_final)}")
+    if csv_path.exists():
+        df_existing = pd.read_csv(csv_path)
+        df_existing = df_existing.dropna(subset=['param_hash'])
+        existing_hashes = set(df_existing['param_hash'].tolist())
     else:
-        print("\nNo new simulations were successfully generated.")
-        df_final = df_existing
+        df_existing = pd.DataFrame()
+        existing_hashes = set()
 
-print(f"Dataset contains {len(df_final)} simulations")
-print(df_final[['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times', 'dT', 'frames_count', 'max_time']].head())
+    new_simulations = []
+    tmax_target = float(gen_cfg.get('grid', {}).get('Tmax', 0.0))
+    if 'max_time' in df_existing.columns and tmax_target > 0:
+        max_time_by_hash = dict(zip(df_existing['param_hash'], df_existing['max_time']))
+    else:
+        max_time_by_hash = {}
+    for params in param_combinations:
+        param_hash = get_param_hash(params)
+        mt = max_time_by_hash.get(param_hash, None)
+        stale = (mt is not None) and (float(mt) < tmax_target - 1e-6)
+        if (param_hash not in existing_hashes) or stale:
+            new_simulations.append(params)
+
+    if max_new is not None:
+        seed = int(gen_cfg.get('seed', 42))
+        rng = np.random.default_rng(seed)
+        if len(new_simulations) > max_new:
+            idx = rng.choice(len(new_simulations), size=int(max_new), replace=False)
+            new_simulations = [new_simulations[i] for i in idx]
+
+    total_new = len(new_simulations)
+    if total_new == 0:
+        return 0
+
+    cwd = os.getcwd()
+    os.chdir(str(project_root))
+    try:
+        new_results = []
+        for params in tqdm(new_simulations, desc="Generating simulations", total=total_new):
+            param_hash = get_param_hash(params)
+            try:
+                s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
+
+                param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
+
+                ts_path = save_time_series(time_series_data, time_stamps, param_str)
+
+                time_metrics = calculate_metrics(time_series_data, s.w)
+                time_stats = compute_time_averages(time_metrics) if time_metrics else {}
+
+                final_frame = time_series_data[-1]
+                if np.max(s.w) > 0:
+                    final_c = final_frame / s.w
+                else:
+                    final_c = final_frame
+                final_metrics = {
+                    'final_mean': np.mean(final_c),
+                    'final_std': np.std(final_c),
+                    'final_max': np.max(final_c),
+                    'final_min': np.min(final_c),
+                    'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
+                }
+
+                matrix_path = f"simulation_data/{param_str}_final.npy"
+                np.save(matrix_path, final_frame)
+
+                result = {
+                    'c_in': params[0], 'w0': params[1], 'mu0': params[2],
+                    'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
+                    'dT': params[6], 'param_hash': param_hash,
+                    'matrix_path': matrix_path, 'timeseries_path': ts_path,
+                    'total_steps': len(time_series_data),
+                    'frames_count': len(time_series_data),
+                    'max_time': time_stamps[-1] if time_stamps else 0.0
+                }
+
+                result.update(time_stats)
+                result.update(final_metrics)
+                new_results.append(result)
+
+                df_new = pd.DataFrame(new_results)
+                if not df_existing.empty and 'param_hash' in df_existing.columns:
+                    df_existing = df_existing[df_existing['param_hash'] != param_hash]
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                df_combined.to_csv(csv_path, index=False)
+
+            except Exception:
+                continue
+    finally:
+        os.chdir(cwd)
+
+    return total_new
+
+
+def generate_for_params(params_list: list[tuple], project_root: Path | None = None, config_path: Path | None = None) -> int:
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.parent
+    project_root = Path(project_root)
+    gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
+
+    sim_data_dir = project_root / 'simulation_data'
+    sim_ts_dir = project_root / 'simulation_timeseries'
+    sim_data_dir.mkdir(parents=True, exist_ok=True)
+    sim_ts_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_path = project_root / 'simulation_results.csv'
+
+    if csv_path.exists():
+        df_existing = pd.read_csv(csv_path)
+        df_existing = df_existing.dropna(subset=['param_hash'])
+        existing_hashes = set(df_existing['param_hash'].tolist())
+    else:
+        df_existing = pd.DataFrame()
+        existing_hashes = set()
+
+    params_list = list(params_list)
+    tmax_target = float(gen_cfg.get('grid', {}).get('Tmax', 0.0))
+    if 'max_time' in df_existing.columns and tmax_target > 0:
+        max_time_by_hash = dict(zip(df_existing['param_hash'], df_existing['max_time']))
+    else:
+        max_time_by_hash = {}
+    filtered = []
+    for p in params_list:
+        h = get_param_hash(p)
+        mt = max_time_by_hash.get(h, None)
+        stale = (mt is not None) and (float(mt) < tmax_target - 1e-6)
+        if (h not in existing_hashes) or stale:
+            filtered.append(p)
+    params_list = filtered
+    if len(params_list) == 0:
+        return 0
+
+    cwd = os.getcwd()
+    os.chdir(str(project_root))
+    try:
+        new_results = []
+        for params in tqdm(params_list, desc="Generating simulations", total=len(params_list)):
+            param_hash = get_param_hash(params)
+            try:
+                s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
+
+                param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
+
+                ts_path = save_time_series(time_series_data, time_stamps, param_str)
+
+                time_metrics = calculate_metrics(time_series_data, s.w)
+                time_stats = compute_time_averages(time_metrics) if time_metrics else {}
+
+                final_frame = time_series_data[-1]
+                if np.max(s.w) > 0:
+                    final_c = final_frame / s.w
+                else:
+                    final_c = final_frame
+                final_metrics = {
+                    'final_mean': np.mean(final_c),
+                    'final_std': np.std(final_c),
+                    'final_max': np.max(final_c),
+                    'final_min': np.min(final_c),
+                    'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
+                }
+
+                matrix_path = f"simulation_data/{param_str}_final.npy"
+                np.save(matrix_path, final_frame)
+
+                result = {
+                    'c_in': params[0], 'w0': params[1], 'mu0': params[2],
+                    'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
+                    'dT': params[6], 'param_hash': param_hash,
+                    'matrix_path': matrix_path, 'timeseries_path': ts_path,
+                    'total_steps': len(time_series_data),
+                    'frames_count': len(time_series_data),
+                    'max_time': time_stamps[-1] if time_stamps else 0.0
+                }
+
+                result.update(time_stats)
+                result.update(final_metrics)
+                new_results.append(result)
+
+                df_new = pd.DataFrame(new_results)
+                if not df_existing.empty and 'param_hash' in df_existing.columns:
+                    df_existing = df_existing[df_existing['param_hash'] != param_hash]
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                df_combined.to_csv(csv_path, index=False)
+            except Exception:
+                continue
+    finally:
+        os.chdir(cwd)
+
+    return len(params_list)
+
+
+if __name__ == '__main__':
+    n = generate_simulations()
+    print(f"Generated {n} simulations")

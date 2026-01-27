@@ -17,22 +17,31 @@ def main():
     parser.add_argument('--generate', action='store_true', help='Generate training data')
     parser.add_argument('--train', action='store_true', help='Train FNO model')
     parser.add_argument('--samples', type=int, default=500, help='Number of samples to generate')
+    parser.add_argument('--workers', type=int, default=1, help='Parallel workers for generation')
+    parser.add_argument('--config', type=str, default='configs/default.json', help='Config file path')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
 
     args = parser.parse_args()
 
     if args.generate:
+        import os
         from src.training.dataset import generate_dataset
-        data_dir = Path(__file__).parent / 'data' / 'processed'
-        print(f"Generating {args.samples} samples...")
-        generate_dataset(data_dir, n_samples=args.samples)
+        root = Path(__file__).parent
+        data_dir = root / 'data' / 'processed'
+        n_workers = args.workers
+        if n_workers == -1:
+            n_workers = os.cpu_count() or 1
+        n = generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers, config_path=Path(args.config))
+        print(f"Built {n} samples in {data_dir}")
 
     elif args.train:
         from src.training.train import main as train_main
-        print(f"Training for {args.epochs} epochs...")
-        train_main(epochs=args.epochs)
+        print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})...")
+        train_main(epochs=args.epochs, lr=args.lr, patience=args.patience)
 
     else:
         from src.visualization.app import run_app

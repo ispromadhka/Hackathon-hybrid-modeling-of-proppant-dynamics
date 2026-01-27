@@ -23,5 +23,80 @@
         "weight_decay": 0.0001,
         "n_epochs": 100,
         "train_ratio": 0.8
+    },
+    "solver_generation": {
+        "seed": 42,
+        "grid": {
+            "L": 60.0,
+            "H": 60.0,
+            "Nx": 100,
+            "Ny": 100,
+            "Tmax": 400.0
+        },
+        "params": {
+            "c_in": {
+                "min": 0.40,
+                "max": 0.45,
+                "step": 0.05
+            },
+            "w0": {
+                "min": 0.025,
+                "max": 0.03,
+                "step": 0.005
+            },
+            "mu0": {
+                "min": 0.1,
+                "max": 0.1,
+                "step": 0.005
+            },
+            "Q": {
+                "min": -0.1,
+                "max": -0.01,
+                "step": 0.05
+            },
+            "chi": {
+                "min": 27.0,
+                "max": 30.0,
+                "step": 3.0
+            },
+            "c_in_times": {
+                "min": 50.0,
+                "max": 200.0,
+                "step": 25.0
+            },
+            "dT_values": [
+                2.0
+            ]
+        },
+        "numerics": {
+            "CFL": 0.8,
+            "rk_stages": 1,
+            "lim_type": "koren",
+            "kappa": -1,
+            "WENO_type": "Z",
+            "use_WENO": false,
+            "prefer_CG": true,
+            "prefer_async_CG": true,
+            "async_check_interval": 1,
+            "eps": 1e-10,
+            "max_iter": 100000
+        },
+        "physics": {
+            "beta": 2.5,
+            "cmax": 0.635,
+            "rho1": 1000.0,
+            "rho2": 2700.0,
+            "g": 0.0,
+            "r": 0.0
+        },
+        "boundary": {
+            "c_in_times_tail": [
+                150.0
+            ],
+            "c_in_arr_tail": [
+                0.0,
+                0.1
+            ]
+        }
     }
 }
