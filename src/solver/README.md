@@ -1,73 +1,83 @@
-## Запуск симуляций
+## Назначение
 
+`src/solver` содержит численный CPU‑решатель (полная физика) и утилиты генерации/визуализации данных.
+
+## Быстрый запуск
+
+Из корня репозитория:
+
+```bash
+python app.py --generate --samples 500 --workers -1 --config configs/default.json
 ```
-import sys
-import os
-module_path = os.path.abspath('../')
-if module_path not in sys.path:
-sys.path.append(module_path)
 
-#Запустите скрипт напрямую - он сам:
+Это построит датасет `data/processed` через общий пайплайн (симуляции → тензоры → sample_*.npz).
 
-#- Создаст все папки
+## Генерация симуляций
 
-#- Проверит предыдущие результаты
+Скрипт: `src/solver/generation.py`
 
-#- Запустит новые симуляции
+Он:
 
-#- Сохранит данные
+- создаёт `simulation_data/` и `simulation_timeseries/`
+- ведёт `simulation_results.csv` (метаданные, пути, базовые метрики)
+- не запускает пересчёт, если симуляция уже есть и актуальна
+- пересчитывает симуляцию, если она устарела:
+  - `max_time < Tmax` из конфига
+  - изменился `gen_hash` (сигнатура `grid/numerics/physics/boundary`)
 
-```
+## Параметры и соглашения
+
+Параметры берутся из `configs/default.json` → `solver_generation`.
+
+Основные параметры, которые входят в имя файла и `param_hash`:
+
+- `c_in`: входная концентрация (в `case1.ipynb` пример: `0.45`)
+- `w0`: ширина трещины (`w` в решателе), м
+- `mu0`: базовая вязкость, Па·с
+- `Q`: расход, м²/с (в проекте используется знак как в `case1.ipynb`: обычно `Q < 0`)
+- `chi`: ширина зоны инжекции по `y`
+- `c_in_times`: времена переключения входной концентрации (первое значение)
+- `dT`: шаг сохранения по времени (выходные кадры)
+
+Важно: поле, которое сохраняется в time‑series файле, называется `Q`, но это не расход. Это массив состояния решателя размера `(Nt, Ny, Nx)`. Для визуализации/обучения он приводится к концентрации как \(c = Q / w\).
 
 ## Структура выходных данных
 
+В корне проекта:
+
+```text
+simulation_data/           финальные поля (последний кадр), .npy
+simulation_timeseries/     временные ряды, *_series.npz
+simulation_results.csv     индекс всех симуляций + метрики
 ```
-├── simulation_data/ # Финальные поля концентраций (.npy)
-├── simulation_timeseries/ # Временные ряды (.npz)
-└── simulation_results.csv # Метаданные и метрики всех симуляций
-```
 
-## Параметры симуляций
+Формат `simulation_timeseries/*_series.npz`:
 
-Основные параметры в коде:
+- `Q`: `(n_frames, Ny, Nx)`
+- `times`: `(n_frames,)`
 
-c_in: входная концентрация (0.05)
+## Использование результатов
 
-w0: ширина пласта (0.01)
-
-mu0: вязкость (0.001)
-
-Q: скорость потока (-0.05)
-
-chi: ширина зоны инжекции (H/6)
-
-c_in_times: время подачи концентрации (50)
-
-dT: шаг по времени (2)
-
-Измените значения в соответствующих списках для новых экспериментов
-
-# Использование результатов
-
-```
+```python
 import pandas as pd
 import numpy as np
 
-# Метаданные всех симуляций
-
-df = pd.read_csv('simulation_results.csv')
-
-# Загрузка конкретной симуляции
-
-param_hash = df.iloc[0]['param_hash']
-matrix = np.load(df.iloc[0]['matrix_path']) # Финальный кадр
-ts_data = np.load(df.iloc[0]['timeseries_path']) # Временной ряд
+df = pd.read_csv("simulation_results.csv")
+r = df.iloc[0]
+final_frame = np.load(r["matrix_path"])
+ts = np.load(r["timeseries_path"])
+Q_series = ts["Q"]
+times = ts["times"]
 ```
 
-## Структура данных
+## Визуализация
 
-Для временных рядов:
+Streamlit‑визуализатор: `src/solver/visualizer.py`
+
+Из корня:
+
+```bash
+streamlit run src/solver/visualizer.py
 ```
-Q_series = ts_data['Q'] # Форма: (кадры, 100, 100)
-times = ts_data['times'] # Временные метки
-```
+
+Отображение строится по концентрации \(c = Q/w\) с шкалой цвета `0..c_in` (как в `case1.ipynb`).

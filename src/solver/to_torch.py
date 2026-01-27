@@ -25,16 +25,19 @@ def load_timeseries(filepath):
     times = data['times']
     return Q, times
 
-def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | None = None, sort_by_mtime: bool = False) -> Path:
+def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | None = None, sort_by_mtime: bool = False, files: list[Path] | None = None) -> Path:
     timeseries_dir = Path(timeseries_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    files = list(timeseries_dir.glob('*_series.npz'))
-    if sort_by_mtime:
-        files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    if files is None:
+        files = list(timeseries_dir.glob('*_series.npz'))
+        if sort_by_mtime:
+            files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        else:
+            files = sorted(files)
     else:
-        files = sorted(files)
+        files = [Path(p) for p in files]
     valid_files = []
     valid_params = []
 
@@ -54,9 +57,17 @@ def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | No
     Q_list = []
     times_list = []
     params_list = []
+    ny = None
+    nx = None
 
     for file, params in tqdm(zip(valid_files, valid_params), total=len(valid_files), desc="Loading data"):
         Q, times = load_timeseries(file)
+        if Q.ndim != 3:
+            continue
+        if ny is None or nx is None:
+            ny, nx = int(Q.shape[1]), int(Q.shape[2])
+        if int(Q.shape[1]) != int(ny) or int(Q.shape[2]) != int(nx):
+            continue
         Q_list.append(Q)
         times_list.append(times)
         params_array = np.array([
@@ -70,8 +81,10 @@ def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | No
         ], dtype=np.float32)
         params_list.append(params_array)
 
+    if len(Q_list) == 0:
+        raise ValueError("No compatible simulation files found")
+
     max_frames = max(Q.shape[0] for Q in Q_list)
-    ny, nx = Q_list[0].shape[1], Q_list[0].shape[2]
     n_samples = len(Q_list)
     n_params = 7
 

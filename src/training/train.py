@@ -18,21 +18,31 @@ from src.model.fno import create_model
 from src.training.dataset import ProppantDataset, create_dataloaders
 
 
-class RelativeLpLoss(nn.Module):
-    """Relative Lp loss for PDE learning."""
+import torch.nn.functional as F
 
+class RelativeLpLoss(nn.Module):
     def __init__(self, p: int = 2):
         super().__init__()
         self.p = p
 
+    def rel(self, x, y):
+        num_examples = x.size()[0]
+        diff_norms = torch.norm(x.reshape(num_examples, -1) - y.reshape(num_examples, -1), self.p, 1)
+        y_norms = torch.norm(y.reshape(num_examples, -1), self.p, 1)
+        return torch.mean(diff_norms / (y_norms + 1e-4))
+
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        pred_flat = pred.reshape(pred.shape[0], -1)
-        target_flat = target.reshape(target.shape[0], -1)
+        rel_loss = self.rel(pred, target)
+        mse_loss = F.mse_loss(pred, target)
 
-        diff_norm = torch.norm(pred_flat - target_flat, p=self.p, dim=1)
-        target_norm = torch.norm(target_flat, p=self.p, dim=1) + 1e-8
+        neg_penalty = torch.mean(F.relu(-pred)**2) * 10.0
 
-        return (diff_norm / target_norm).mean()
+        n_cells = pred.shape[2] * pred.shape[3]
+        mass_pred = torch.sum(pred, dim=(2, 3)) / n_cells
+        mass_target = torch.sum(target, dim=(2, 3)) / n_cells
+        mass_loss = F.mse_loss(mass_pred, mass_target)
+
+        return rel_loss + 5.0 * mse_loss + neg_penalty + mass_loss
 
 
 class Trainer:
@@ -164,12 +174,12 @@ class Trainer:
                 warmup_factor = epoch / self.warmup_epochs
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = initial_lr * warmup_factor
-            else:
-                if self.scheduler is not None:
-                    self.scheduler.step()
 
             train_loss = self.train_epoch()
             val_loss = self.validate()
+            if epoch > self.warmup_epochs:
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
@@ -187,7 +197,6 @@ class Trainer:
             elapsed = time.time() - t0
             lr = self.optimizer.param_groups[0]['lr']
 
-            # Quality metric: convert relative L2 to accuracy percentage
             quality = max(0, (1 - val_loss) * 100)
 
             status = ""
@@ -215,7 +224,17 @@ class Trainer:
         print("-" * 80)
         print(f"Training finished!")
         print(f"Best validation loss: {self.best_val_loss:.4e}")
-        print(f"Best quality: {max(0, (1 - self.best_val_loss) * 100):.1f}%")
+
+        self.model.eval()
+        q_sum = 0
+        with torch.no_grad():
+            for batch in self.val_loader:
+                p, t = batch['params'].to(self.device), batch['trajectory'].to(self.device)
+                pred = self.model(p)
+                target = t[:, :pred.shape[1], :, :].permute(0, 1, 3, 2)
+                mae = torch.mean(torch.abs(pred - target))
+                q_sum += max(0, (1 - mae.item()) * 100)
+        print(f"Best quality: {q_sum/len(self.val_loader):.1f}%")
 
 
 def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
@@ -234,12 +253,15 @@ def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
     with open(data_dir / 'metadata.json') as f:
         metadata = json.load(f)
 
-    batch_size = 2
+    batch_size = 8
     try:
         nx = int(metadata.get('nx', 0))
         ny = int(metadata.get('ny', 0))
         n_times_meta = int(metadata.get('n_times', 0))
+        # Reduce batch size if memory is an issue
         if nx * ny * max(n_times_meta, 1) >= 2_000_000:
+            batch_size = 2
+        if nx * ny * max(n_times_meta, 1) >= 4_000_000:
             batch_size = 1
     except Exception:
         batch_size = 1

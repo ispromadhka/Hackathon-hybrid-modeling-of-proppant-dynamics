@@ -4,6 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from pathlib import Path
 import re
+import json
+from io import BytesIO
+from PIL import Image
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -48,9 +53,11 @@ def load_timeseries(filepath):
     times = data['times']
     return Q, times
 
-def create_contour_plot(Q_frame, w0, times, time_idx, L=60, H=60):
-    x = np.linspace(0, L, Q_frame.shape[1])
-    y = np.linspace(0, H, Q_frame.shape[0])
+def create_contour_plot(Q_frame, w0, c_in, times, time_idx, L=60, H=60):
+    nx = int(Q_frame.shape[1])
+    ny = int(Q_frame.shape[0])
+    x = np.linspace(0, L, nx, endpoint=False) + L / nx / 2
+    y = np.linspace(0, H, ny, endpoint=False) + H / ny / 2
 
     w = w0 * np.ones_like(Q_frame)
     c = Q_frame / w
@@ -61,7 +68,7 @@ def create_contour_plot(Q_frame, w0, times, time_idx, L=60, H=60):
         y=y,
         colorscale='Turbo',
         zmin=0,
-        zmax=float(w0),
+        zmax=float(c_in),
         contours=dict(coloring='heatmap', showlines=False),
         colorbar=dict(title='c', titleside='right', thickness=15)
     ))
@@ -80,6 +87,23 @@ def create_contour_plot(Q_frame, w0, times, time_idx, L=60, H=60):
 
     return fig
 
+def make_gif(conc: np.ndarray, vmax: float, fps: int = 10, stride: int = 1) -> bytes:
+    stride = max(1, int(stride))
+    fps = max(1, int(fps))
+    norm = mcolors.Normalize(vmin=0.0, vmax=float(vmax), clip=True)
+    cmap = cm.get_cmap('turbo')
+    frames = []
+    for i in range(0, conc.shape[0], stride):
+        rgba = cmap(norm(conc[i]))
+        rgb = (rgba[..., :3] * 255).astype(np.uint8)
+        frames.append(Image.fromarray(rgb, mode='RGB'))
+    if not frames:
+        return b""
+    bio = BytesIO()
+    duration = int(1000 / fps)
+    frames[0].save(bio, format='GIF', save_all=True, append_images=frames[1:], duration=duration, loop=0)
+    return bio.getvalue()
+
 st.set_page_config(page_title="Time Series Visualizer", layout="wide")
 
 st.title("Визуализация временных состояний")
@@ -96,6 +120,17 @@ if not simulations:
     st.stop()
 
 df_sims = pd.DataFrame(simulations)
+
+cfg_path = project_root / 'configs' / 'default.json'
+try:
+    with open(cfg_path, 'r') as f:
+        cfg = json.load(f)
+    grid_cfg = cfg.get('solver_generation', {}).get('grid', {})
+    L_cfg = float(grid_cfg.get('L', 60.0))
+    H_cfg = float(grid_cfg.get('H', 60.0))
+except Exception:
+    L_cfg = 60.0
+    H_cfg = 60.0
 
 st.sidebar.header("Выбор параметров")
 
@@ -267,7 +302,7 @@ try:
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        fig = create_contour_plot(Q[closest_idx], selected_w0, times, closest_idx)
+        fig = create_contour_plot(Q[closest_idx], selected_w0, selected_c_in, times, closest_idx, L=L_cfg, H=H_cfg)
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -294,6 +329,17 @@ try:
         st.write(f"- c min: {c.min():.6f}")
         st.write(f"- c max: {c.max():.6f}")
         st.write(f"- c mean: {c.mean():.6f}")
+
+        st.subheader("GIF")
+        fps = st.slider("fps", min_value=1, max_value=30, value=10, step=1)
+        stride = st.slider("stride", min_value=1, max_value=max(1, len(times) // 20), value=max(1, len(times) // 50), step=1)
+        if st.button("Сгенерировать GIF"):
+            conc_all = (Q / np.float32(selected_w0)).astype(np.float32)
+            conc_all = np.clip(conc_all, 0.0, np.float32(selected_c_in))
+            gif_bytes = make_gif(conc_all, vmax=float(selected_c_in), fps=int(fps), stride=int(stride))
+            if gif_bytes:
+                st.image(gif_bytes)
+                st.download_button("Скачать GIF", data=gif_bytes, file_name="simulation.gif", mime="image/gif")
 
 except Exception as e:
     st.error(f"Ошибка при загрузке данных: {str(e)}")

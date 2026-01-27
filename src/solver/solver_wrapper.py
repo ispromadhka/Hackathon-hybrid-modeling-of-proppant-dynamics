@@ -43,6 +43,7 @@ class ProppantSolver:
         # Flow
         Q_inlet: float = 0.05,
         inlet_fraction: float = 0.1,  # Small slit (10% of height)
+        inlet_position: float = 0.5,
         # Injection pattern (None = 0.5s pulse, set injection_duration for custom)
         injection_duration: float = 0.5,  # Duration of proppant injection [s]
         c_in_times: np.ndarray = None,
@@ -117,8 +118,7 @@ class ProppantSolver:
         # chi is the width of the inlet slit
         chi = Ly * inlet_fraction  # inlet width
         y = self.y
-        # Position inlet at y = 0.65*Ly (center-right position)
-        inlet_center = Ly * 0.65
+        inlet_center = Ly * float(inlet_position)
         q_in = Q_inlet / chi * np.where(np.abs(y - inlet_center) < chi/2, 1.0, 0.0)
         q_out = -np.mean(q_in)
 

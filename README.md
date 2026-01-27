@@ -18,7 +18,7 @@ python app.py
 
 ```bash
 # Generate training data
-python app.py --generate --samples 500 --workers -1
+python app.py --generate --samples 500 --workers -1 --config configs/default.json
 
 # Train FNO model
 python app.py --train --epochs 100 --lr 1e-3 --patience 15
@@ -35,6 +35,7 @@ python app.py --port 8050
 | `--train` | - | Train FNO model |
 | `--samples` | 500 | Number of samples to generate |
 | `--workers` | 1 | Parallel workers (-1 = all CPUs) |
+| `--config` | `configs/default.json` | Config file path |
 | `--epochs` | 100 | Training epochs |
 | `--lr` | 1e-3 | Learning rate |
 | `--patience` | 15 | Early stopping patience |
@@ -99,6 +100,32 @@ Vₚ = Vf + Vslip(c)                    — proppant velocity
 └── requirements.txt
 ```
 
+## Data Pipeline (Generation → Training/Visualization)
+
+The project maintains a single data flow for both training and the Dash UI:
+
+- **Raw simulations**: `simulation_timeseries/*_series.npz` and `simulation_results.csv`
+- **Torch bundle**: `torch_data/data.pt` (plus `torch_data/data.npz` for quick inspection)
+- **Training/visualization dataset**: `data/processed/sample_*.npz` + `data/processed/metadata.json`
+
+`python app.py --generate ...` calls `src.training.dataset.generate_dataset()`, which orchestrates:
+
+- `src.solver.generation` to create/update missing or stale simulations
+- `src.solver.to_torch` to pack them into tensors
+- `src.training.dataset.build_processed_from_torch_data` to build `data/processed`
+
+### Config-driven generation
+
+Generation settings live in `configs/default.json` under `solver_generation`.
+
+- **Stale detection**: if an existing simulation has `max_time < Tmax` or its `gen_hash` differs (grid/numerics/physics/boundary changed), it is re-generated.
+
+### Dataset sampling mode
+
+`configs/default.json` also has `dataset_generation`:
+
+- `sampling: "lhs"`: selects `n_samples` parameter combinations using Latin Hypercube sampling over the discrete grids defined in `solver_generation.params` (keeps filenames deterministic and avoids full Cartesian explosion).
+
 ## Web Interface
 
 Side-by-side comparison of Neural Network vs Numerical Solver:
@@ -122,9 +149,8 @@ Side-by-side comparison of Neural Network vs Numerical Solver:
 
 Fourier Neural Operator architecture:
 
-- **Input**: Physics parameters (9 values)
-  - `[c_inlet, Q_inlet, g, μ₀, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]`
-- **Output**: Full trajectory c(x,y,t)
+- **Input**: Parameters from `data/processed` + grid coordinates
+- **Output**: Full trajectory \(c(x,y,t)\) (stored/learned in normalized form \(c/c_{max}\in[0,1]\))
 - **Architecture**: 4 Fourier layers, width=48, modes=(12,8)
 - **Parameters**: ~10M trainable
 
@@ -161,11 +187,7 @@ Epoch   2 | Train: 1.56e-01 | Val: 1.45e-01 | Quality: 85.5% | LR: 4.00e-04 | Ti
 
 ## Data Generation
 
-Uses Latin Hypercube Sampling for uniform parameter coverage:
-
-- **Injection modes**: continuous, single_pulse, multi_pulse
-- **Limiter types**: koren, superbee, minmod
-- **RK stages**: 2, 3
+Data generation is configuration-driven via `configs/default.json` (`solver_generation` and `dataset_generation`).
 
 ## Goal
 

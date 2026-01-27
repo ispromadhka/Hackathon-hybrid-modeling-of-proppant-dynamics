@@ -19,12 +19,15 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
+import math
+import itertools
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.solver.solver_wrapper import ProppantSolver
 from src.solver.generation import generate_simulations
+from src.solver.generation import load_generation_config, _values_from_spec, generate_for_params
 from src.solver.to_torch import build_torch_data
 
 
@@ -238,17 +241,126 @@ def generate_dataset(
     T: float = 100.0,
     dT: float = 5.0,
     config_path: Path | None = None,
+    clear_processed: bool = False,
 ):
     output_dir = Path(output_dir)
     project_root = output_dir.parent.parent
+    gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
+    cfg = {}
+    if config_path is None:
+        config_path = project_root / 'configs' / 'default.json'
+    config_path = Path(config_path)
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+    ds_cfg = cfg.get('dataset_generation', {})
+    sampling = str(ds_cfg.get('sampling', '')).lower()
+    ds_seed = int(ds_cfg.get('seed', seed))
 
-    generate_simulations(max_new=n_samples, project_root=project_root, config_path=config_path)
+    if sampling == 'lhs':
+        p = gen_cfg.get('params', {})
+        keys = ['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times']
+        grids = []
+        for k in keys:
+            vals = _values_from_spec(p.get(k))
+            if len(vals) == 0:
+                raise ValueError(f"Empty parameter grid for {k}")
+            grids.append(vals)
+        dT_vals = p.get('dT_values', [])
+        if len(dT_vals) == 0:
+            raise ValueError("Empty dT_values")
 
-    timeseries_dir = project_root / 'simulation_timeseries'
-    torch_dir = project_root / 'torch_data'
-    torch_path = build_torch_data(timeseries_dir, torch_dir, max_files=n_samples, sort_by_mtime=True)
+        total_combos = int(np.prod([len(v) for v in grids]) * max(1, len(dT_vals)))
+        target_n = int(n_samples)
+        if target_n > total_combos:
+            raise ValueError(f"Requested n_samples={target_n} exceeds total discrete combinations={total_combos}")
 
-    return build_processed_from_torch_data(output_dir, torch_path, max_samples=n_samples)
+        def _params_to_path(params: tuple, root: Path) -> Path:
+            c_in, w0, mu0, Q, chi, c_in_times, dT = params
+            return root / 'simulation_timeseries' / f"c{c_in:.3f}_w{w0:.3f}_mu{mu0:.3f}_Q{Q:.3f}_chi{chi:.1f}_t{int(c_in_times):d}_dT{dT:.1f}_series.npz"
+
+        params_set: set[tuple] = set()
+        timeseries_root = Path(project_root)
+        batch = max(256, target_n * 4)
+        attempt = 0
+        while len(params_set) < target_n:
+            u = latin_hypercube_sampling(batch, len(keys), seed=ds_seed + attempt)
+            for i in range(int(u.shape[0])):
+                chosen = []
+                for j in range(len(keys)):
+                    vals = grids[j]
+                    idx = int(math.floor(float(u[i, j]) * len(vals)))
+                    if idx >= len(vals):
+                        idx = len(vals) - 1
+                    chosen.append(float(vals[idx]))
+                dT = float(dT_vals[(len(params_set) + i) % len(dT_vals)])
+                chosen.append(dT)
+                t = tuple(chosen)
+                if _params_to_path(t, timeseries_root).exists():
+                    continue
+                params_set.add(t)
+                if len(params_set) >= target_n:
+                    break
+            attempt += 1
+            if attempt > 1000:
+                break
+        if len(params_set) < target_n:
+            for combo in itertools.product(*[list(map(float, v)) for v in grids], [float(v) for v in dT_vals]):
+                t = tuple(combo)
+                if _params_to_path(t, timeseries_root).exists():
+                    continue
+                params_set.add(t)
+                if len(params_set) >= target_n:
+                    break
+        if len(params_set) < target_n:
+            raise RuntimeError(f"Not enough new combinations to add {target_n} samples (available new={len(params_set)})")
+        params_list = list(params_set)[:target_n]
+
+        pipeline = tqdm(total=3, desc="Dataset pipeline")
+        try:
+            pipeline.set_postfix_str("generate")
+            expected_paths = [_params_to_path(p, timeseries_root) for p in params_list]
+            missing = [p for p in params_list if not _params_to_path(p, timeseries_root).exists()]
+            tries = 0
+            while missing and tries < 5:
+                generate_for_params(missing, project_root=project_root, config_path=config_path, n_workers=n_workers)
+                missing = [p for p in params_list if not _params_to_path(p, timeseries_root).exists()]
+                tries += 1
+            if missing:
+                raise RuntimeError(f"Could not generate {len(missing)} simulations")
+            pipeline.update(1)
+
+            pipeline.set_postfix_str("torch")
+            timeseries_dir = project_root / 'simulation_timeseries'
+            torch_dir = project_root / 'torch_data'
+            torch_path = build_torch_data(timeseries_dir, torch_dir, max_files=None, sort_by_mtime=False, files=expected_paths)
+            pipeline.update(1)
+
+            pipeline.set_postfix_str("processed")
+            n = build_processed_from_torch_data(output_dir, torch_path, max_samples=target_n, config_path=config_path, clear_existing=bool(clear_processed))
+            pipeline.update(1)
+            return n
+        finally:
+            pipeline.close()
+    else:
+        pipeline = tqdm(total=3, desc="Dataset pipeline")
+        try:
+            pipeline.set_postfix_str("generate")
+            generate_simulations(max_new=n_samples, project_root=project_root, config_path=config_path, n_workers=n_workers)
+            pipeline.update(1)
+
+            pipeline.set_postfix_str("torch")
+            timeseries_dir = project_root / 'simulation_timeseries'
+            torch_dir = project_root / 'torch_data'
+            torch_path = build_torch_data(timeseries_dir, torch_dir, max_files=n_samples, sort_by_mtime=True)
+            pipeline.update(1)
+
+            pipeline.set_postfix_str("processed")
+            n = build_processed_from_torch_data(output_dir, torch_path, max_samples=n_samples, config_path=config_path, clear_existing=bool(clear_processed))
+            pipeline.update(1)
+            return n
+        finally:
+            pipeline.close()
 
 
 def create_dataloaders(
@@ -289,15 +401,19 @@ def create_dataloaders(
 def build_processed_from_torch_data(
     output_dir: Path,
     torch_data_path: Path,
-    max_samples: Optional[int] = None
+    max_samples: Optional[int] = None,
+    config_path: Path | None = None,
+    clear_existing: bool = False
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    for f in output_dir.glob("sample_*.npz"):
-        try:
-            f.unlink()
-        except Exception:
-            pass
+    if clear_existing:
+        old_files = list(output_dir.glob("sample_*.npz"))
+        for f in tqdm(old_files, desc="Cleaning processed", leave=False):
+            try:
+                f.unlink()
+            except Exception:
+                pass
 
     torch_data_path = Path(torch_data_path)
     data = torch.load(torch_data_path, map_location='cpu', weights_only=False)
@@ -333,11 +449,13 @@ def build_processed_from_torch_data(
     w0_safe = np.where(w0 == 0, 1.0, w0)
     concentrations = Q / w0_safe
 
-    cmax = np.float32(0.635)
+    project_root = output_dir.parent.parent
+    gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
+    cmax = np.float32(gen_cfg.get('physics', {}).get('cmax', 0.635))
     concentrations = np.clip(concentrations, 0.0, float(cmax)).astype(np.float32, copy=False)
     concentrations = (concentrations / cmax).astype(np.float32, copy=False)
 
-    for i in range(n_samples):
+    for i in tqdm(range(n_samples), desc="Fixing tails", leave=False):
         t = times[i]
         idx = np.where(t > 0)[0]
         if idx.size == 0:
@@ -352,29 +470,73 @@ def build_processed_from_torch_data(
     if params_raw.shape[1] != len(param_names):
         raise ValueError(f"Expected {len(param_names)} params, got {params_raw.shape[1]}")
 
-    p_min = params_raw.min(axis=0)
-    p_max = params_raw.max(axis=0)
+    p_min = np.zeros((len(param_names),), dtype=np.float32)
+    p_max = np.ones((len(param_names),), dtype=np.float32)
+    spec = gen_cfg.get('params', {})
+    for i, name in enumerate(param_names):
+        if name == 'dT':
+            vals = spec.get('dT_values', [])
+            if isinstance(vals, list) and len(vals) > 0:
+                p_min[i] = float(np.min(vals))
+                p_max[i] = float(np.max(vals))
+            else:
+                p_min[i] = float(params_raw[:, i].min())
+                p_max[i] = float(params_raw[:, i].max())
+            continue
+        s = spec.get(name, None)
+        if isinstance(s, dict) and 'min' in s and 'max' in s:
+            p_min[i] = float(s['min'])
+            p_max[i] = float(s['max'])
+        else:
+            p_min[i] = float(params_raw[:, i].min())
+            p_max[i] = float(params_raw[:, i].max())
     denom = (p_max - p_min)
     denom = np.where(denom == 0, 1.0, denom)
     params = (params_raw - p_min) / denom
     params = params.astype(np.float32, copy=False)
 
-    for i in range(n_samples):
+    start_idx = 0
+    if not clear_existing:
+        existing = sorted(output_dir.glob("sample_*.npz"))
+        if existing:
+            ids = []
+            for f in existing:
+                stem = f.stem
+                if stem.startswith("sample_"):
+                    try:
+                        ids.append(int(stem.split("_", 1)[1]))
+                    except Exception:
+                        pass
+            if ids:
+                start_idx = max(ids) + 1
+
+    meta_path = output_dir / 'metadata.json'
+    if meta_path.exists() and not clear_existing:
+        try:
+            with open(meta_path) as f:
+                old_meta = json.load(f)
+            if int(old_meta.get('nx', nx)) != int(nx) or int(old_meta.get('ny', ny)) != int(ny) or int(old_meta.get('n_times', n_times)) != int(n_times):
+                raise ValueError("Existing processed dataset incompatible. Use --clear-processed.")
+        except Exception:
+            raise
+
+    for i in tqdm(range(n_samples), desc="Writing samples", leave=False):
         np.savez_compressed(
-            output_dir / f"sample_{i:05d}.npz",
+            output_dir / f"sample_{(start_idx + i):05d}.npz",
             concentrations=concentrations[i],
             times=times[i],
             params=params[i],
             params_raw=params_raw[i],
         )
 
+    total_out = len(list(output_dir.glob("sample_*.npz")))
     metadata = {
         'source': str(torch_data_path),
-        'n_samples': int(n_samples),
+        'n_samples': int(total_out),
         'nx': int(nx),
         'ny': int(ny),
-        'L': 60.0,
-        'H': 60.0,
+        'L': float(gen_cfg.get('grid', {}).get('L', 60.0)),
+        'H': float(gen_cfg.get('grid', {}).get('H', 60.0)),
         'cmax': float(cmax),
         'n_times': int(n_times),
         'Tmax': float(np.max(times)),

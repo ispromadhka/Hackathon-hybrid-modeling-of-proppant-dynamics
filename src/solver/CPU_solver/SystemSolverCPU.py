@@ -1,5 +1,6 @@
 import numpy as np
 from tqdm import tqdm
+import multiprocessing
 from .PoissonCPU import PressureSolverCPU
 from .TransportCPU import TransportSolverCPU
 
@@ -142,7 +143,8 @@ class SolverCPU():
             self.times[self.step]
         )
         total_steps = min(int((tmax - current_time) / self.dT), self.Nt-1)
-        progress_bar = tqdm(total=total_steps, desc="Solving", unit="step")
+        disable_bar = multiprocessing.current_process().name != 'MainProcess'
+        progress_bar = tqdm(total=total_steps, desc="Solving", unit="step", disable=disable_bar)
 
         while current_time < tmax:
             q, p, vx, vy, current_time = self.make_step(q, p, vx, vy, current_time)
@@ -154,11 +156,9 @@ class SolverCPU():
                 progress_bar.update(1)
 
                 if self.step == self.Nt - 1:
-                    print("Nt-limit")
                     break
 
         progress_bar.close()
-        print("done")
 
     def rk1_cycle(self, Q: np.ndarray, P: np.ndarray, Vx: np.ndarray, Vy: np.ndarray, c_in_value: float, dt: float):
         q_left = np.where(self.q_in == 0, Q[:,0], c_in_value*self.w[:,0])

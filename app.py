@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--samples', type=int, default=500, help='Number of samples to generate')
     parser.add_argument('--workers', type=int, default=1, help='Parallel workers for generation')
     parser.add_argument('--config', type=str, default='configs/default.json', help='Config file path')
+    parser.add_argument('--clear-processed', action='store_true', help='Clear data/processed before generating')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
@@ -35,7 +36,7 @@ def main():
         n_workers = args.workers
         if n_workers == -1:
             n_workers = os.cpu_count() or 1
-        n = generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers, config_path=Path(args.config))
+        n = generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers, config_path=Path(args.config), clear_processed=bool(args.clear_processed))
         print(f"Built {n} samples in {data_dir}")
 
     elif args.train:
