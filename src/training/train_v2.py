@@ -204,8 +204,9 @@ def train_worker(rank, world_size, gpu_ids, args):
     )
 
     # Move to GPU and wrap with DDP
+    # find_unused_parameters=True needed for SpecBoost (residual stages)
     model = model.to(device)
-    model = DDP(model, device_ids=[gpu_id], find_unused_parameters=False)
+    model = DDP(model, device_ids=[gpu_id], find_unused_parameters=True)
 
     n_params_total = sum(p.numel() for p in model.parameters())
     if is_main:
