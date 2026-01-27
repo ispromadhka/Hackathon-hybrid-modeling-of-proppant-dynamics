@@ -165,7 +165,12 @@ def create_model(
     ny: int = 32,
     n_times: int = 26,
     n_params: int = 9,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    # Optional architecture overrides (for loading old checkpoints)
+    modes1: int = None,
+    modes2: int = None,
+    width: int = None,
+    n_layers: int = None,
 ) -> FNOProppant:
     """Create FNO model for proppant transport.
 
@@ -173,10 +178,18 @@ def create_model(
     - modes: 75% of Nyquist frequency to capture high-frequency features
     - width: 64 channels for richer representations
     - layers: 6 for deeper feature extraction
+
+    Set modes1, modes2, width, n_layers to override defaults (for loading old checkpoints).
     """
-    # Capture 75% of available frequency spectrum (Nyquist = N/2)
-    modes1 = min(24, (nx // 2) * 3 // 4)  # 75% of x-Nyquist
-    modes2 = min(12, (ny // 2) * 3 // 4)  # 75% of y-Nyquist
+    # Use provided values or calculate defaults
+    if modes1 is None:
+        modes1 = min(24, (nx // 2) * 3 // 4)  # 75% of x-Nyquist
+    if modes2 is None:
+        modes2 = min(12, (ny // 2) * 3 // 4)  # 75% of y-Nyquist
+    if width is None:
+        width = 64
+    if n_layers is None:
+        n_layers = 6
 
     model = FNOProppant(
         nx=nx,
@@ -184,8 +197,8 @@ def create_model(
         n_times=n_times,
         modes1=modes1,
         modes2=modes2,
-        width=64,
-        n_layers=6,
+        width=width,
+        n_layers=n_layers,
         n_params=n_params
     )
     return model.to(device)

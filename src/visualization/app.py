@@ -46,6 +46,7 @@ def load_model():
 
             state_dict = checkpoint['model_state_dict']
 
+            # Detect model architecture from checkpoint weights
             if 'grid_x' in state_dict:
                 grid_shape = state_dict['grid_x'].shape
                 nx = grid_shape[2]
@@ -57,17 +58,34 @@ def load_model():
             if 'lift.weight' in state_dict:
                 in_channels = state_dict['lift.weight'].shape[1]
                 n_params = in_channels - 2
+                width = state_dict['lift.weight'].shape[0]  # Detect width from lift layer
             else:
                 n_params = 5
+                width = 48
 
             if 'project.2.weight' in state_dict:
                 n_times = state_dict['project.2.weight'].shape[0]
             else:
                 n_times = 26
 
-            print(f"Detected model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+            # Detect modes and n_layers from checkpoint
+            if 'fno_blocks.0.spectral_conv.weights1' in state_dict:
+                modes1 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[2]
+                modes2 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[3]
+            else:
+                modes1, modes2 = 12, 8
 
-            MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device)
+            # Count number of FNO layers
+            n_layers = sum(1 for k in state_dict if k.startswith('fno_blocks.') and k.endswith('.spectral_conv.weights1'))
+
+            print(f"Detected model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+            print(f"Architecture: width={width}, modes=({modes1},{modes2}), layers={n_layers}")
+
+            MODEL = create_model(
+                nx=nx, ny=ny, n_times=n_times, n_params=n_params,
+                modes1=modes1, modes2=modes2, width=width, n_layers=n_layers,
+                device=device
+            )
             MODEL.load_state_dict(checkpoint['model_state_dict'], strict=False)
             MODEL.eval()
             print(f"Loaded FNO model from {checkpoint_path}")
@@ -145,22 +163,22 @@ app.layout = html.Div([
 
         # Main content area
         html.Div([
-            # NN Plot
+            # NN Plot - Fixed 700x350 px (2:1 aspect ratio)
             html.Div([
                 html.Div([
                     html.H3("Neural Network (FNO)", style={'color': '#3498db', 'margin': '0', 'flex': '1'}),
                     html.Div(id='nn-time', style={'fontSize': '13px', 'color': '#3498db', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center', 'padding': '0 10px'}),
-                dcc.Graph(id='nn-plot', style={'height': '280px'})
+                dcc.Graph(id='nn-plot', config={'staticPlot': False}, style={'height': '350px', 'width': '700px'})
             ]),
 
-            # NS Plot
+            # NS Plot - Fixed 700x350 px (2:1 aspect ratio)
             html.Div([
                 html.Div([
                     html.H3("Numerical Solver (NS)", style={'color': '#e74c3c', 'margin': '0', 'flex': '1'}),
                     html.Div(id='ns-time', style={'fontSize': '13px', 'color': '#e74c3c', 'fontWeight': 'bold'})
                 ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center', 'padding': '0 10px'}),
-                dcc.Graph(id='ns-plot', style={'height': '280px'})
+                dcc.Graph(id='ns-plot', config={'staticPlot': False}, style={'height': '350px', 'width': '700px'})
             ]),
 
             # Horizontal Colorbar at the bottom
@@ -191,7 +209,7 @@ app.layout = html.Div([
 
 
 def create_heatmap_figure(data, x, y, title, times, frame_idx=0):
-    """Create animated heatmap with FIXED axis ranges."""
+    """Create animated heatmap with FIXED axis ranges (30x60, aspect 1:2)."""
     data_pct = data * 100  # Convert to percentage
 
     frames = []
@@ -218,20 +236,28 @@ def create_heatmap_figure(data, x, y, title, times, frame_idx=0):
         frames=frames
     )
 
+    # Fixed plot dimensions: 600px width, 300px height (2:1 ratio matching domain 60x30)
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
+        width=700,  # Fixed width
+        height=350,  # Fixed height (half of width for 1:2 aspect)
         xaxis=dict(
             title='x [m]',
-            range=[0, DOMAIN_LX],  # FIXED range
+            range=[0, DOMAIN_LX],  # FIXED 0-60
+            autorange=False,  # Prevent auto-adjustment
+            fixedrange=True,  # Prevent zoom/pan
             constrain='domain',
             showgrid=False,
+            dtick=10,  # Tick every 10m
         ),
         yaxis=dict(
             title='y [m]',
-            range=[0, DOMAIN_LY],  # FIXED range
-            scaleanchor='x',
-            scaleratio=1,
+            range=[0, DOMAIN_LY],  # FIXED 0-30
+            autorange=False,  # Prevent auto-adjustment
+            fixedrange=True,  # Prevent zoom/pan
+            constrain='domain',
             showgrid=False,
+            dtick=10,  # Tick every 10m
         ),
         updatemenus=[{
             'type': 'buttons',
@@ -262,14 +288,16 @@ def create_heatmap_figure(data, x, y, title, times, frame_idx=0):
 
 
 def create_empty_figure(title, message):
-    """Create empty placeholder figure."""
+    """Create empty placeholder figure with FIXED dimensions."""
     fig = go.Figure()
     fig.add_annotation(text=message, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                       font=dict(size=14, color='#7f8c8d'))
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=11)),
-        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], showgrid=True),
-        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], scaleanchor='x', scaleratio=1, showgrid=True),
+        width=700,  # Fixed width
+        height=350,  # Fixed height (1:2 aspect)
+        xaxis=dict(title='x [m]', range=[0, DOMAIN_LX], autorange=False, fixedrange=True, showgrid=True, dtick=10),
+        yaxis=dict(title='y [m]', range=[0, DOMAIN_LY], autorange=False, fixedrange=True, showgrid=True, dtick=10),
         margin=dict(l=60, r=20, t=35, b=60)
     )
     return fig
