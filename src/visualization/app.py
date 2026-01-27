@@ -354,6 +354,9 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         # Prepare input parameters based on model's expected n_params
         n_params = MODEL.n_params
 
+        # Get device from model
+        device = next(MODEL.parameters()).device
+
         if n_params == 5:
             # Old 5-param model (legacy, untrained properly)
             params = torch.tensor([[
@@ -362,7 +365,7 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
                 gravity,
                 mu0 * 100,
                 r_p * 1000,
-            ]], dtype=torch.float32)
+            ]], dtype=torch.float32, device=device)
         else:
             # New 9-param model - NORMALIZED to [0, 1] (must match dataset.py!)
             params = torch.tensor([[
@@ -375,7 +378,7 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
                 (2 - 2) / 1.0,                    # rk_stages normalized
                 0.0 / 2.0,                        # lim_type (koren=0)
                 0.0 / 2.0,                        # injection_mode (continuous=0)
-            ]], dtype=torch.float32)
+            ]], dtype=torch.float32, device=device)
 
         with torch.no_grad():
             pred = MODEL(params)
