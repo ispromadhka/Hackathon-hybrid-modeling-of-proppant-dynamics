@@ -139,9 +139,9 @@ app.layout = html.Div([
             html.Hr(),
             html.H4("Simulation", style={'color': '#2c3e50'}),
 
-            html.Label("Injection Duration [s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='injection_duration', min=0.1, max=2.0, value=0.5, step=0.1,
-                      marks={0.1: '0.1', 0.5: '0.5', 1.0: '1.0', 2.0: '2.0'}),
+            html.Label("Injection Duration [s] (0=continuous)", style={'fontWeight': 'bold'}),
+            dcc.Slider(id='injection_duration', min=0, max=50, value=0, step=5,
+                      marks={0: 'cont.', 10: '10', 25: '25', 50: '50'}),
 
             html.Label("Total Time [s]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
             dcc.Slider(id='sim_time', min=20, max=200, value=80, step=20,
@@ -327,6 +327,9 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     # ===== Run Numerical Solver (NS) =====
     t0_ns = time.perf_counter()
 
+    # injection_duration=0 means continuous injection
+    inj_dur = None if injection_duration == 0 else injection_duration
+
     solver = ProppantSolver(
         nx=nx, ny=ny,
         Lx=Lx, Ly=Ly,
@@ -336,8 +339,9 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
         g=gravity,
         mu0=mu0,
         r_particle=r_p,
-        injection_duration=injection_duration,
-        inlet_fraction=0.1,  # Small slit
+        injection_duration=inj_dur,
+        inlet_fraction=0.5,      # Half-height inlet
+        inlet_position=0.5,      # Centered vertically
     )
 
     times_ns, traj_ns = solver.solve()
@@ -368,16 +372,19 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
             ]], dtype=torch.float32, device=device)
         else:
             # New 9-param model - NORMALIZED to [0, 1] (must match dataset.py!)
+            # injection_mode: 0=continuous, 1=single_pulse, 2=multi_pulse
+            inj_mode = 0 if injection_duration == 0 else 1  # continuous or single_pulse
+
             params = torch.tensor([[
-                c_inlet / 0.5,                    # c_inlet normalized
-                Q_inlet / 0.1,                    # Q_inlet normalized
-                gravity / 12.0,                   # g normalized
-                mu0 / 0.01,                       # mu0 normalized
-                r_p / 0.0005,                     # r_particle normalized
-                0.1 * 2,                          # inlet_fraction normalized
-                (2 - 2) / 1.0,                    # rk_stages normalized
-                0.0 / 2.0,                        # lim_type (koren=0)
-                0.0 / 2.0,                        # injection_mode (continuous=0)
+                c_inlet / 0.5,                    # c_inlet normalized [0.15-0.5] -> [0.3-1]
+                Q_inlet / 0.1,                    # Q_inlet normalized [0.02-0.1] -> [0.2-1]
+                gravity / 12.0,                   # g normalized [0-12] -> [0-1]
+                mu0 / 0.01,                       # mu0 normalized [0.0005-0.01] -> [0.05-1]
+                r_p / 0.0005,                     # r_particle normalized [0.0001-0.0005] -> [0.2-1]
+                0.5,                              # inlet_fraction=0.5 (already normalized)
+                (2 - 2) / 1.0,                    # rk_stages=2 normalized -> 0
+                0.0 / 2.0,                        # lim_type (koren=0) -> 0
+                inj_mode / 2.0,                   # injection_mode normalized -> [0-1]
             ]], dtype=torch.float32, device=device)
 
         with torch.no_grad():

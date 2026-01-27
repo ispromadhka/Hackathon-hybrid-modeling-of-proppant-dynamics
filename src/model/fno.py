@@ -79,6 +79,11 @@ class FNOProppant(nn.Module):
 
     Input: Physics parameters encoded as spatial fields + coordinate grids
     Output: Full concentration trajectory c(x,y,t)
+
+    Architecture improvements based on spectral bias research:
+    - Increased Fourier modes to capture high-frequency features
+    - Deeper network with more channels
+    - Instance normalization for training stability
     """
 
     def __init__(
@@ -86,10 +91,10 @@ class FNOProppant(nn.Module):
         nx: int = 64,
         ny: int = 32,
         n_times: int = 26,
-        modes1: int = 12,
-        modes2: int = 8,
-        width: int = 48,
-        n_layers: int = 4,
+        modes1: int = 24,  # Increased from 12 → capture 75% of x-frequencies
+        modes2: int = 12,  # Increased from 8 → capture 75% of y-frequencies
+        width: int = 64,   # Increased from 48 for richer representations
+        n_layers: int = 6, # Increased from 4 for better feature extraction
         n_params: int = 9,  # [c_inlet, Q_inlet, g, mu0, r_particle, inlet_fraction, rk_stages, lim_type, injection_mode]
     ):
         super().__init__()
@@ -162,15 +167,25 @@ def create_model(
     n_params: int = 9,
     device: str = 'cpu'
 ) -> FNOProppant:
-    """Create FNO model for proppant transport."""
+    """Create FNO model for proppant transport.
+
+    Uses optimized hyperparameters based on spectral bias research:
+    - modes: 75% of Nyquist frequency to capture high-frequency features
+    - width: 64 channels for richer representations
+    - layers: 6 for deeper feature extraction
+    """
+    # Capture 75% of available frequency spectrum (Nyquist = N/2)
+    modes1 = min(24, (nx // 2) * 3 // 4)  # 75% of x-Nyquist
+    modes2 = min(12, (ny // 2) * 3 // 4)  # 75% of y-Nyquist
+
     model = FNOProppant(
         nx=nx,
         ny=ny,
         n_times=n_times,
-        modes1=min(12, nx // 4),
-        modes2=min(8, ny // 4),
-        width=48,
-        n_layers=4,
+        modes1=modes1,
+        modes2=modes2,
+        width=64,
+        n_layers=6,
         n_params=n_params
     )
     return model.to(device)

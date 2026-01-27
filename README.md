@@ -170,3 +170,11 @@ Uses Latin Hypercube Sampling for uniform parameter coverage:
 ## Goal
 
 Replace numerical solver (~5s per simulation) with FNO for 100-1000x speedup while maintaining accuracy.
+
+## Documentation
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed documentation:
+- Why FNO instead of PINN
+- Neural network architecture explanation
+- Training methodology and loss functions
+- Physics solver details

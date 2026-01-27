@@ -174,6 +174,7 @@ def generate_single_sample(args: dict) -> Optional[dict]:
             mu0=mu0,
             r_particle=r_particle,
             inlet_fraction=inlet_fraction,
+            inlet_position=0.5,  # Centered inlet
             c_in_times=c_in_times,
             c_in_arr=c_in_arr,
             rk_stages=rk_stages,
@@ -198,7 +199,7 @@ def generate_single_sample(args: dict) -> Optional[dict]:
             g / 12.0,                         # g: [0, 12] -> [0, 1]
             mu0 / 0.01,                       # mu0: [0.0005, 0.01] -> [0.05, 1.0]
             r_particle / 0.0005,              # r_particle: [0.0001, 0.0005] -> [0.2, 1.0]
-            inlet_fraction * 2,               # inlet_fraction: [1/6, 1/2] -> [0.33, 1.0]
+            inlet_fraction,                   # inlet_fraction: [0.3, 0.7] -> [0.3, 0.7] (already ~normalized)
             (rk_stages - 2) / 1.0,            # rk_stages: [2, 3] -> [0, 1]
             lim_type_map.get(lim_type, 0) / 2.0,  # lim_type: [0, 2] -> [0, 1]
             injection_mode_map.get(injection_mode, 0) / 2.0,  # injection_mode: [0, 2] -> [0, 1]
@@ -273,7 +274,7 @@ def generate_dataset(
         'g': (0.0, 12.0),               # Gravity [m/s²] (0 = horizontal, 9.81 = vertical)
         'mu0': (0.0005, 0.010),         # Viscosity [Pa·s] (0.5-10 mPa·s)
         'r_particle': (0.0001, 0.0005), # Particle radius [m] (100-500 μm)
-        'inlet_fraction': (1/6, 1/2),   # Inlet height fraction
+        'inlet_fraction': (0.3, 0.7),   # Inlet height fraction (30-70% of domain height)
     }
 
     # Categorical parameters

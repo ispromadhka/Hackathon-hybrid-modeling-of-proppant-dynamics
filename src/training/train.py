@@ -35,6 +35,86 @@ class RelativeLpLoss(nn.Module):
         return (diff_norm / target_norm).mean()
 
 
+class SpectralLoss(nn.Module):
+    """
+    Frequency-aware loss to combat spectral bias in FNOs.
+
+    Standard L2 loss prioritizes low-frequency errors (they dominate energy).
+    This loss explicitly penalizes errors across the frequency spectrum,
+    helping the model learn high-frequency features.
+
+    Based on: "Fourier Neural Operators for Structural Dynamics Models:
+    Challenges, Limitations and Advantages of Using a Spectrogram Loss"
+    """
+
+    def __init__(self, weight_high_freq: float = 2.0):
+        """
+        Args:
+            weight_high_freq: Weight multiplier for high-frequency errors.
+                             Higher values push the model to learn sharp features.
+        """
+        super().__init__()
+        self.weight_high_freq = weight_high_freq
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # pred/target shape: (batch, n_times, nx, ny)
+        batch_size = pred.shape[0]
+
+        # Compute 2D FFT for each time step
+        pred_fft = torch.fft.rfft2(pred)
+        target_fft = torch.fft.rfft2(target)
+
+        # Magnitude of error in frequency domain
+        spectral_error = torch.abs(pred_fft - target_fft)
+
+        # Create frequency weighting mask (higher weight for high frequencies)
+        # Shape: (nx, ny//2+1) for rfft2 output
+        nx, ny_rfft = spectral_error.shape[-2], spectral_error.shape[-1]
+
+        # Frequency indices (normalized to [0, 1])
+        freq_x = torch.fft.fftfreq(nx, device=pred.device).abs()
+        freq_y = torch.linspace(0, 0.5, ny_rfft, device=pred.device)
+
+        # 2D frequency magnitude
+        freq_x_grid, freq_y_grid = torch.meshgrid(freq_x, freq_y, indexing='ij')
+        freq_magnitude = torch.sqrt(freq_x_grid**2 + freq_y_grid**2)
+
+        # Weight: 1.0 for low freq, weight_high_freq for high freq
+        # Linear interpolation based on frequency magnitude
+        freq_weight = 1.0 + (self.weight_high_freq - 1.0) * (freq_magnitude / freq_magnitude.max())
+
+        # Apply frequency weighting
+        weighted_error = spectral_error * freq_weight
+
+        # Normalize by target spectrum magnitude
+        target_magnitude = torch.abs(target_fft) + 1e-8
+        relative_spectral_error = weighted_error / target_magnitude
+
+        return relative_spectral_error.mean()
+
+
+class CombinedLoss(nn.Module):
+    """
+    Combined loss function: Relative L2 + Spectral Loss.
+
+    This addresses the spectral bias problem in FNOs by:
+    1. RelativeLpLoss: Scale-invariant spatial loss (good for PDEs)
+    2. SpectralLoss: Frequency-aware loss (captures high-frequency features)
+    """
+
+    def __init__(self, spatial_weight: float = 0.7, spectral_weight: float = 0.3):
+        super().__init__()
+        self.spatial_loss = RelativeLpLoss(p=2)
+        self.spectral_loss = SpectralLoss(weight_high_freq=2.0)
+        self.spatial_weight = spatial_weight
+        self.spectral_weight = spectral_weight
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        l_spatial = self.spatial_loss(pred, target)
+        l_spectral = self.spectral_loss(pred, target)
+        return self.spatial_weight * l_spatial + self.spectral_weight * l_spectral
+
+
 class Trainer:
     """Training manager for FNO model with early stopping."""
 
@@ -67,8 +147,9 @@ class Trainer:
             eta_min=lr * 0.01  # Reduce to 1% of initial LR
         )
 
-        # Relative L2 loss (better for PDEs than MSE)
-        self.criterion = RelativeLpLoss(p=2)
+        # Combined loss: Relative L2 + Spectral (to combat spectral bias)
+        # This helps the model learn both low and high frequency features
+        self.criterion = CombinedLoss(spatial_weight=0.7, spectral_weight=0.3)
 
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
