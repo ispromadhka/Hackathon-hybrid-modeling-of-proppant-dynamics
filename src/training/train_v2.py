@@ -2,25 +2,26 @@
 Enhanced training script for FNO v2 proppant model.
 
 Improvements:
-1. Large batch size (32-64) with gradient accumulation
-2. Mixed precision training (AMP) for speed
+1. Multi-GPU support (DataParallel / DistributedDataParallel)
+2. Large batch size (32-64) with gradient accumulation
 3. Advanced loss function (L2 + Spectral + H1 + Temporal)
 4. Learning rate warmup + cosine annealing
 5. Gradient clipping
 6. EMA (Exponential Moving Average) for stable inference
 7. Multiple metrics tracking
 8. SpecBoost training (optional)
+9. Automatic GPU detection and scaling
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-try:
-    from torch.cuda.amp import autocast, GradScaler
-    AMP_AVAILABLE = True
-except ImportError:
-    AMP_AVAILABLE = False
+from torch.nn.parallel import DataParallel
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+import os
 from pathlib import Path
 import json
 import time
@@ -29,6 +30,53 @@ from tqdm import tqdm
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
+
+
+def get_gpu_info():
+    """Get information about available GPUs."""
+    if not torch.cuda.is_available():
+        return {
+            'available': False,
+            'count': 0,
+            'devices': [],
+            'total_memory_gb': 0,
+        }
+
+    count = torch.cuda.device_count()
+    devices = []
+    total_memory = 0
+
+    for i in range(count):
+        props = torch.cuda.get_device_properties(i)
+        memory_gb = props.total_memory / (1024**3)
+        devices.append({
+            'id': i,
+            'name': props.name,
+            'memory_gb': memory_gb,
+            'compute_capability': f"{props.major}.{props.minor}",
+        })
+        total_memory += memory_gb
+
+    return {
+        'available': True,
+        'count': count,
+        'devices': devices,
+        'total_memory_gb': total_memory,
+    }
+
+
+def setup_distributed(rank, world_size):
+    """Setup distributed training."""
+    os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
+    os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+
+
+def cleanup_distributed():
+    """Cleanup distributed training."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 from src.model.fno_v2 import (
     create_enhanced_model,
@@ -41,33 +89,37 @@ from src.training.train import Metrics  # Reuse metrics from train.py
 
 
 class EMA:
-    """Exponential Moving Average for model weights."""
+    """Exponential Moving Average for model weights (supports DataParallel)."""
 
     def __init__(self, model: nn.Module, decay: float = 0.999):
-        self.model = model
+        # Handle DataParallel wrapper
+        self.model = model.module if hasattr(model, 'module') else model
         self.decay = decay
         self.shadow = {}
         self.backup = {}
 
-        for name, param in model.named_parameters():
+        for name, param in self.model.named_parameters():
             if param.requires_grad:
                 self.shadow[name] = param.data.clone()
 
     def update(self):
-        for name, param in self.model.named_parameters():
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        for name, param in model.named_parameters():
             if param.requires_grad:
                 self.shadow[name] = (
                     self.decay * self.shadow[name] + (1 - self.decay) * param.data
                 )
 
     def apply_shadow(self):
-        for name, param in self.model.named_parameters():
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        for name, param in model.named_parameters():
             if param.requires_grad:
                 self.backup[name] = param.data.clone()
                 param.data = self.shadow[name]
 
     def restore(self):
-        for name, param in self.model.named_parameters():
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        for name, param in model.named_parameters():
             if param.requires_grad:
                 param.data = self.backup[name]
 
@@ -77,8 +129,8 @@ class EnhancedTrainer:
     Enhanced training manager for FNO v2.
 
     Features:
+    - Multi-GPU support (DataParallel)
     - Large batch training with gradient accumulation
-    - Mixed precision (AMP)
     - EMA weights
     - Advanced loss function
     - Comprehensive metrics
@@ -100,8 +152,19 @@ class EnhancedTrainer:
         ema_decay: float = 0.999,
         weight_decay: float = 0.01,
         warmup_epochs: int = 10,
+        multi_gpu: bool = True,  # Enable multi-GPU by default
     ):
+        self.n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        self.multi_gpu = multi_gpu and self.n_gpus > 1
+
+        # Move model to device first
         self.model = model.to(device)
+
+        # Wrap with DataParallel if multiple GPUs
+        if self.multi_gpu:
+            print(f"Using DataParallel with {self.n_gpus} GPUs")
+            self.model = DataParallel(self.model)
+
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
@@ -270,14 +333,18 @@ class EnhancedTrainer:
         # Save with EMA weights
         self.ema.apply_shadow()
 
+        # Handle DataParallel: save the underlying model
+        model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
+
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_to_save.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'best_val_loss': self.best_val_loss,
             'best_metrics': self.best_metrics,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
+            'n_gpus': self.n_gpus,
         }
 
         torch.save(checkpoint, self.checkpoint_dir / 'last_v2.pt')
@@ -287,14 +354,29 @@ class EnhancedTrainer:
         self.ema.restore()
 
     def train(self):
+        # Get model without DataParallel wrapper for param count
+        base_model = self.model.module if hasattr(self.model, 'module') else self.model
+        n_params = sum(p.numel() for p in base_model.parameters())
+
         print("=" * 100)
         print("Enhanced FNO v2 Training")
         print("=" * 100)
         print(f"Device: {self.device}")
-        print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        if self.multi_gpu:
+            print(f"Multi-GPU: {self.n_gpus} GPUs (DataParallel)")
+            gpu_info = get_gpu_info()
+            for gpu in gpu_info['devices']:
+                print(f"  GPU {gpu['id']}: {gpu['name']} ({gpu['memory_gb']:.1f} GB)")
+            print(f"  Total VRAM: {gpu_info['total_memory_gb']:.1f} GB")
+        print(f"Parameters: {n_params:,}")
         print(f"Mixed Precision: {self.use_amp} (disabled for FFT compatibility)")
         print(f"Gradient Accumulation: {self.gradient_accumulation_steps}x")
-        print(f"Effective Batch Size: {self.train_loader.batch_size * self.gradient_accumulation_steps}")
+        effective_batch = self.train_loader.batch_size * self.gradient_accumulation_steps
+        if self.multi_gpu:
+            effective_batch *= self.n_gpus
+            print(f"Effective Batch Size: {self.train_loader.batch_size} x {self.gradient_accumulation_steps} x {self.n_gpus} GPUs = {effective_batch}")
+        else:
+            print(f"Effective Batch Size: {effective_batch}")
         print(f"Early Stopping: patience={self.patience}, min_delta={self.min_delta}")
         print(f"Warmup Epochs: {self.warmup_epochs}")
         print("-" * 100)
@@ -370,6 +452,30 @@ def main(
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    # ===== GPU Detection =====
+    gpu_info = get_gpu_info()
+    print("=" * 60)
+    print("GPU CONFIGURATION")
+    print("=" * 60)
+    if gpu_info['available']:
+        print(f"Found {gpu_info['count']} GPU(s):")
+        for gpu in gpu_info['devices']:
+            print(f"  [{gpu['id']}] {gpu['name']} - {gpu['memory_gb']:.1f} GB (CC {gpu['compute_capability']})")
+        print(f"Total VRAM: {gpu_info['total_memory_gb']:.1f} GB")
+
+        # Auto-adjust batch size for multi-GPU
+        if gpu_info['count'] > 1:
+            # Scale batch size per GPU
+            original_batch = batch_size
+            # Each GPU gets batch_size samples, so we can use smaller per-GPU batch
+            # but total effective batch is larger
+            print(f"Multi-GPU mode: {gpu_info['count']} GPUs")
+            print(f"Batch size per GPU: {batch_size}")
+            print(f"Total batch per step: {batch_size * gpu_info['count']}")
+    else:
+        print("No GPU available, using CPU")
+    print("=" * 60)
+
     # Check if data exists
     if not (data_dir / 'metadata.json').exists():
         print(f"No data found in {data_dir}")
@@ -380,11 +486,13 @@ def main(
         metadata = json.load(f)
 
     # Create dataloaders with larger batch size
+    # Use more workers for multi-GPU
+    num_workers = min(8, 4 * gpu_info['count']) if gpu_info['available'] else 0
     train_loader, val_loader = create_dataloaders(
         data_dir,
         batch_size=batch_size,
         train_ratio=0.8,
-        num_workers=4 if device == 'cuda' else 0
+        num_workers=num_workers
     )
 
     # Get dimensions from data
@@ -408,17 +516,29 @@ def main(
     )
 
     # Create trainer
+    # Adjust gradient accumulation based on GPU count
+    # With more GPUs, we need less accumulation to reach same effective batch
+    n_gpus = gpu_info['count'] if gpu_info['available'] else 1
+    grad_accum = max(1, 4 // n_gpus)  # 4 for 1 GPU, 2 for 2 GPUs, 1 for 4+ GPUs
+
+    # Scale learning rate with effective batch size (linear scaling rule)
+    effective_batch = batch_size * grad_accum * n_gpus
+    scaled_lr = lr * (effective_batch / 128)  # Base LR is for batch=128
+
+    print(f"Learning rate scaled: {lr} -> {scaled_lr:.6f} (linear scaling for batch={effective_batch})")
+
     trainer = EnhancedTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        lr=lr,
+        lr=scaled_lr,
         n_epochs=epochs,
         checkpoint_dir=checkpoint_dir,
         patience=patience,
-        use_amp=device == 'cuda',
-        gradient_accumulation_steps=4,  # Effective batch = 32 * 4 = 128
+        use_amp=False,  # Disabled for FFT compatibility
+        gradient_accumulation_steps=grad_accum,
+        multi_gpu=n_gpus > 1,
     )
 
     trainer.train()
