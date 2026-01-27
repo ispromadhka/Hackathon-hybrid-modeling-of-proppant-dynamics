@@ -29,19 +29,73 @@ from src.solver.solver_wrapper import ProppantSolver
 class ProppantDataset(Dataset):
     """Dataset of proppant transport simulations."""
 
-    def __init__(self, data_dir: Path, transform=None):
+    def __init__(self, data_dir: Path, transform=None, filter_by_metadata: bool = True):
+        """
+        Initialize dataset.
+
+        Args:
+            data_dir: Directory containing sample_*.npz files
+            transform: Optional transform to apply
+            filter_by_metadata: If True, filter samples to match metadata.json dimensions
+        """
         self.data_dir = Path(data_dir)
         self.transform = transform
 
-        self.files = sorted(self.data_dir.glob("sample_*.npz"))
+        all_files = sorted(self.data_dir.glob("sample_*.npz"))
 
-        if len(self.files) == 0:
+        if len(all_files) == 0:
             raise ValueError(f"No data files found in {data_dir}")
 
-        with np.load(self.files[0]) as data:
-            self.n_times = data['concentrations'].shape[0]
-            self.ny = data['concentrations'].shape[1]
-            self.nx = data['concentrations'].shape[2]
+        # Try to load expected dimensions from metadata
+        metadata_path = self.data_dir / 'metadata.json'
+        expected_nx, expected_ny = None, None
+        if metadata_path.exists() and filter_by_metadata:
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+                expected_nx = metadata.get('nx')
+                expected_ny = metadata.get('ny')
+                print(f"Expected grid size from metadata: {expected_nx}x{expected_ny}")
+
+        # Filter files by consistent size
+        self.files = []
+        self.n_times = None
+        self.nx = None
+        self.ny = None
+
+        skipped = 0
+        for f in all_files:
+            try:
+                with np.load(f) as data:
+                    shape = data['concentrations'].shape
+                    n_t, n_y, n_x = shape
+
+                    # If we have expected dimensions from metadata, filter by them
+                    if expected_nx is not None and expected_ny is not None:
+                        if n_x != expected_nx or n_y != expected_ny:
+                            skipped += 1
+                            continue
+
+                    # Set reference dimensions from first valid file
+                    if self.nx is None:
+                        self.n_times = n_t
+                        self.ny = n_y
+                        self.nx = n_x
+
+                    # Check consistency with reference
+                    if n_x == self.nx and n_y == self.ny and n_t == self.n_times:
+                        self.files.append(f)
+                    else:
+                        skipped += 1
+            except Exception as e:
+                print(f"Warning: Could not load {f}: {e}")
+                skipped += 1
+
+        if len(self.files) == 0:
+            raise ValueError(f"No valid data files found in {data_dir}")
+
+        if skipped > 0:
+            print(f"Filtered dataset: {len(self.files)} samples (skipped {skipped} with inconsistent size)")
+        print(f"Dataset dimensions: {self.n_times} time steps, {self.nx}x{self.ny} grid")
 
     def __len__(self) -> int:
         return len(self.files)

@@ -2,6 +2,7 @@
 Training script for FNO proppant model.
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -76,7 +77,7 @@ class Metrics:
 
         # Peak Signal-to-Noise Ratio (higher is better)
         max_val = max(target.max().item(), 1e-8)
-        psnr = 10 * torch.log10(max_val ** 2 / (mse + 1e-8)).item() if mse > 0 else 100.0
+        psnr = 10 * math.log10(max_val ** 2 / (mse + 1e-8)) if mse > 0 else 100.0
 
         # Mass Conservation Error (total mass should be similar)
         pred_mass = pred.sum(dim=(-2, -1))  # Sum over spatial dims

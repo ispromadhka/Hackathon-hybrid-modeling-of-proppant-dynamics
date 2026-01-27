@@ -20,6 +20,11 @@ Examples:
     # Maximum quality (2000 samples, xlarge + specboost)
     python app.py --generate --samples 2000 --workers 8
     python app.py --train-v2 --model xlarge --specboost --epochs 1000
+
+Notes:
+    - Batch size auto-detects optimal value based on GPU memory
+    - Multi-GPU is automatically detected and used (DataParallel)
+    - For xlarge+specboost on 32GB GPUs, batch_size will be auto-reduced
 """
 
 import argparse
@@ -64,8 +69,8 @@ Examples:
                         help='Learning rate (default: 0.001)')
     parser.add_argument('--patience', type=int, default=50,
                         help='Early stopping patience (default: 50)')
-    parser.add_argument('--batch-size', '-b', type=int, default=32,
-                        help='Batch size (default: 32)')
+    parser.add_argument('--batch-size', '-b', type=int, default=0,
+                        help='Batch size (0 = auto-detect based on GPU memory)')
 
     # FNO v2 specific options
     parser.add_argument('--model', '-m', type=str, default='large',
@@ -143,7 +148,8 @@ Examples:
         print("=" * 60)
         print(f"  Model:    {args.model}" + (" + SpecBoost" if args.specboost else ""))
         print(f"  Epochs:   {args.epochs}")
-        print(f"  Batch:    {args.batch_size} (effective: {args.batch_size * 4})")
+        batch_str = "auto" if args.batch_size == 0 else str(args.batch_size)
+        print(f"  Batch:    {batch_str}")
         print(f"  LR:       {args.lr}")
         print(f"  Patience: {args.patience}")
         print("=" * 60)

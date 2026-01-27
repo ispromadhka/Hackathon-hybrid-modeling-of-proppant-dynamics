@@ -286,6 +286,17 @@ class EnhancedFNOProppant(nn.Module):
         # Initialize weights
         self._init_weights()
 
+        # Gradient checkpointing flag
+        self._gradient_checkpointing = False
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing to reduce memory usage."""
+        self._gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self):
+        """Disable gradient checkpointing."""
+        self._gradient_checkpointing = False
+
     def _init_weights(self):
         """Initialize weights using Xavier/He initialization."""
         for m in self.modules():
@@ -323,8 +334,14 @@ class EnhancedFNOProppant(nn.Module):
         x = self.lift(x)
 
         # FNO layers with residual connections
-        for block in self.fno_blocks:
-            x = block(x)
+        # Use gradient checkpointing if enabled (saves memory, slower training)
+        if self._gradient_checkpointing and self.training:
+            from torch.utils.checkpoint import checkpoint
+            for block in self.fno_blocks:
+                x = checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self.fno_blocks:
+                x = block(x)
 
         # Project to trajectory
         trajectory = self.project(x)
@@ -373,6 +390,23 @@ class SpecBoostFNO(nn.Module):
 
         # Learnable weights for combining predictions
         self.combination_weights = nn.Parameter(torch.ones(1 + n_boost_stages) / (1 + n_boost_stages))
+
+        # Gradient checkpointing flag
+        self._gradient_checkpointing = False
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for all sub-models."""
+        self._gradient_checkpointing = True
+        self.base_model.enable_gradient_checkpointing()
+        for module in self.residual_modules:
+            module.enable_gradient_checkpointing()
+
+    def disable_gradient_checkpointing(self):
+        """Disable gradient checkpointing."""
+        self._gradient_checkpointing = False
+        self.base_model.disable_gradient_checkpointing()
+        for module in self.residual_modules:
+            module.disable_gradient_checkpointing()
 
     def forward(self, params: torch.Tensor) -> torch.Tensor:
         """Forward pass with spectral boosting."""
