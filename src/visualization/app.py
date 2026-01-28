@@ -211,23 +211,23 @@ app.layout = html.Div([
             html.H4("Parameters", style={'color': '#2c3e50', 'marginTop': '0'}),
 
             html.Label("Inlet Concentration c₀", style={'fontWeight': 'bold'}),
-            dcc.Input(id='c_inlet', type='number', min=0.1, max=0.5, value=0.35, step=0.01,
+            dcc.Input(id='c_inlet', type='number', min=0.15, max=0.40, value=0.30, step=0.01,
                       style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Label("Flow Rate Q [m²/s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
-            dcc.Input(id='Q_inlet', type='number', min=0.01, max=0.2, value=0.05, step=0.01,
+            dcc.Input(id='Q_inlet', type='number', min=0.02, max=0.10, value=0.05, step=0.01,
                       style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Label("Gravity [m/s²]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
-            dcc.Input(id='gravity', type='number', min=0, max=20, value=9.81, step=0.1,
+            dcc.Input(id='gravity', type='number', min=0, max=9.81, value=9.81, step=0.1,
                       style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Label("Viscosity μ₀ [mPa·s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
-            dcc.Input(id='viscosity', type='number', min=1, max=100, value=1, step=1,
+            dcc.Input(id='viscosity', type='number', min=1, max=10, value=1, step=0.5,
                       style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Label("Particle Radius [μm]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
-            dcc.Input(id='r_particle', type='number', min=50, max=1000, value=200, step=10,
+            dcc.Input(id='r_particle', type='number', min=100, max=300, value=200, step=10,
                       style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Hr(),
@@ -426,12 +426,12 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
     injection_duration = float(injection_duration) if injection_duration is not None else 5.0
     sim_time = float(sim_time) if sim_time is not None else 80.0
 
-    # Clamp to valid ranges
-    c_inlet = max(0.1, min(0.5, c_inlet))
-    Q_inlet = max(0.01, min(0.2, Q_inlet))
-    gravity = max(0, min(20, gravity))
-    viscosity = max(1, min(100, viscosity))
-    r_particle = max(50, min(1000, r_particle))
+    # Clamp to valid ranges (must match dataset.py param_ranges for stability)
+    c_inlet = max(0.15, min(0.40, c_inlet))
+    Q_inlet = max(0.02, min(0.10, Q_inlet))
+    gravity = max(0, min(9.81, gravity))
+    viscosity = max(1, min(10, viscosity))
+    r_particle = max(100, min(300, r_particle))
     injection_duration = max(1, min(60, injection_duration))
     sim_time = max(10, min(400, sim_time))
 
@@ -484,16 +484,17 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
                                   dtype=torch.float32, device=device)
         else:
             inj_mode = 1  # single_pulse
+            # Normalization must match dataset.py param_ranges
             params = torch.tensor([[
-                c_inlet / 0.5,
-                Q_inlet / 0.1,
-                gravity / 12.0,
-                mu0 / 0.01,
-                r_p / 0.0005,
-                0.5,
-                0.0,
-                0.0,
-                inj_mode / 2.0,
+                c_inlet / 0.4,       # c_inlet max=0.4
+                Q_inlet / 0.1,       # Q_inlet max=0.1
+                gravity / 9.81,      # g max=9.81
+                mu0 / 0.01,          # mu0 max=0.01
+                r_p / 0.0003,        # r_particle max=0.0003
+                0.5,                 # inlet_fraction (fixed)
+                1.0,                 # rk_stages=3 -> (3-2)/1=1.0 (fixed)
+                0.0,                 # lim_type=koren -> 0/2=0.0 (fixed)
+                inj_mode / 2.0,      # injection_mode
             ]], dtype=torch.float32, device=device)
 
         with torch.no_grad():

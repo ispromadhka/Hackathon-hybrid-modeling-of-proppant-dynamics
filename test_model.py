@@ -94,13 +94,13 @@ def test_model():
     print(f"{'='*60}")
 
     # Test params similar to what app uses
+    # Normalization: [c/0.4, Q/0.1, g/9.81, mu/0.01, r/0.0003, inlet_frac, rk, lim, inj_mode]
     test_cases = [
-        # [c_inlet/0.5, Q/0.1, g/12, mu/0.01, r/0.0005, inlet_frac, rk, lim, inj_mode]
-        ("Default params", [0.7, 0.5, 0.0, 0.1, 0.4, 0.5, 0.0, 0.0, 0.5]),
-        ("High concentration", [1.0, 0.5, 0.0, 0.1, 0.4, 0.5, 0.0, 0.0, 0.5]),
-        ("With gravity", [0.7, 0.5, 0.8, 0.1, 0.4, 0.5, 0.0, 0.0, 0.5]),
-        ("All zeros", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("All ones", [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+        ("Default params", [0.75, 0.5, 1.0, 0.1, 0.67, 0.5, 1.0, 0.0, 0.5]),
+        ("High concentration", [1.0, 0.5, 1.0, 0.1, 0.67, 0.5, 1.0, 0.0, 0.5]),
+        ("No gravity", [0.75, 0.5, 0.0, 0.1, 0.67, 0.5, 1.0, 0.0, 0.5]),
+        ("All min", [0.375, 0.2, 0.0, 0.1, 0.33, 0.3, 1.0, 0.0, 0.0]),
+        ("All max", [1.0, 1.0, 1.0, 1.0, 1.0, 0.7, 1.0, 0.0, 1.0]),
         ("Random", list(np.random.rand(9))),
     ]
 

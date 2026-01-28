@@ -245,17 +245,17 @@ def generate_single_sample(args: dict) -> Optional[dict]:
         injection_mode_map = {'continuous': 0, 'single_pulse': 1, 'multi_pulse': 2}
         lim_type_map = {'koren': 0, 'superbee': 1, 'minmod': 2, 'vanleer': 3}
 
-        # Parameters vector for FNO input - NORMALIZED to [0, 1]
-        # This is critical for training stability
+        # Parameters vector for FNO input - NORMALIZED to ~[0, 1]
+        # Divisors match max values from param_ranges for proper normalization
         params = np.array([
-            c_inlet / 0.5,                    # c_inlet: [0.15, 0.50] -> [0.3, 1.0]
+            c_inlet / 0.4,                    # c_inlet: [0.15, 0.40] -> [0.375, 1.0]
             Q_inlet / 0.1,                    # Q_inlet: [0.02, 0.10] -> [0.2, 1.0]
-            g / 12.0,                         # g: [0, 12] -> [0, 1]
-            mu0 / 0.01,                       # mu0: [0.0005, 0.01] -> [0.05, 1.0]
-            r_particle / 0.0005,              # r_particle: [0.0001, 0.0005] -> [0.2, 1.0]
-            inlet_fraction,                   # inlet_fraction: [0.3, 0.7] -> [0.3, 0.7] (already ~normalized)
-            (rk_stages - 2) / 1.0,            # rk_stages: [2, 3] -> [0, 1]
-            lim_type_map.get(lim_type, 0) / 2.0,  # lim_type: [0, 2] -> [0, 1]
+            g / 9.81,                         # g: [0, 9.81] -> [0, 1]
+            mu0 / 0.01,                       # mu0: [0.001, 0.01] -> [0.1, 1.0]
+            r_particle / 0.0003,              # r_particle: [0.0001, 0.0003] -> [0.33, 1.0]
+            inlet_fraction,                   # inlet_fraction: [0.3, 0.7] -> [0.3, 0.7]
+            (rk_stages - 2) / 1.0,            # rk_stages: 3 -> 1.0 (fixed)
+            lim_type_map.get(lim_type, 0) / 2.0,  # lim_type: koren -> 0.0 (fixed)
             injection_mode_map.get(injection_mode, 0) / 2.0,  # injection_mode: [0, 2] -> [0, 1]
         ], dtype=np.float32)
 
@@ -321,20 +321,25 @@ def generate_dataset(
 
     nx, ny = grid_size
 
-    # Parameter ranges (physically realistic)
+    # Parameter ranges (numerically stable)
+    # Constraints to avoid solver instability:
+    # - c_inlet < 0.40 to avoid viscosity singularity (μ → ∞ as c → cmax)
+    # - mu0 >= 0.001 to keep settling velocity reasonable (Vst ∝ 1/μ₀)
+    # - r_particle <= 0.0003 to limit settling (Vst ∝ r²)
+    # - g <= 9.81 to avoid extreme settling
     param_ranges = {
-        'c_inlet': (0.15, 0.50),        # Proppant concentration
+        'c_inlet': (0.15, 0.40),        # Proppant concentration (max 40% to avoid singularity)
         'Q_inlet': (0.02, 0.10),        # Flow rate [m²/s]
-        'g': (0.0, 12.0),               # Gravity [m/s²] (0 = horizontal, 9.81 = vertical)
-        'mu0': (0.0005, 0.010),         # Viscosity [Pa·s] (0.5-10 mPa·s)
-        'r_particle': (0.0001, 0.0005), # Particle radius [m] (100-500 μm)
+        'g': (0.0, 9.81),               # Gravity [m/s²] (0 = horizontal, 9.81 = vertical)
+        'mu0': (0.001, 0.010),          # Viscosity [Pa·s] (1-10 mPa·s, min increased for stability)
+        'r_particle': (0.0001, 0.0003), # Particle radius [m] (100-300 μm, max reduced)
         'inlet_fraction': (0.3, 0.7),   # Inlet height fraction (30-70% of domain height)
     }
 
     # Categorical parameters
     injection_modes = ['continuous', 'single_pulse', 'multi_pulse']
-    lim_types = ['koren', 'superbee', 'minmod']
-    rk_stages_options = [2, 3]
+    lim_types = ['koren']  # Only koren limiter
+    rk_stages_options = [3]  # Only RK3
 
     # Generate Latin Hypercube samples for continuous parameters
     n_continuous = len(param_ranges)
