@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from pathlib import Path
 import re
+import tempfile
+import shutil
 from tqdm import tqdm
 
 def parse_filename(filename):
@@ -109,20 +111,40 @@ def build_torch_data(timeseries_dir: Path, output_dir: Path, max_files: int | No
     }
 
     output_path = output_dir / 'data.pt'
-    torch.save(data, output_path)
-
     npz_path = output_dir / 'data.npz'
-    np.savez_compressed(
-        npz_path,
-        Q=Q_padded,
-        times=times_padded,
-        params=params_array,
-        n_samples=n_samples,
-        n_frames=max_frames,
-        ny=ny,
-        nx=nx,
-        n_params=n_params
-    )
+
+    # Atomic write: save to temp file, then rename to avoid corruption
+    try:
+        # Save torch data atomically
+        with tempfile.NamedTemporaryFile(dir=output_dir, suffix='.pt.tmp', delete=False) as tmp:
+            tmp_pt_path = Path(tmp.name)
+        torch.save(data, tmp_pt_path)
+        shutil.move(str(tmp_pt_path), str(output_path))
+
+        # Save numpy data atomically
+        with tempfile.NamedTemporaryFile(dir=output_dir, suffix='.npz.tmp', delete=False) as tmp:
+            tmp_npz_path = Path(tmp.name)
+        np.savez_compressed(
+            tmp_npz_path,
+            Q=Q_padded,
+            times=times_padded,
+            params=params_array,
+            n_samples=n_samples,
+            n_frames=max_frames,
+            ny=ny,
+            nx=nx,
+            n_params=n_params
+        )
+        shutil.move(str(tmp_npz_path), str(npz_path))
+    except Exception as e:
+        # Cleanup temp files on error
+        for p in [tmp_pt_path, tmp_npz_path]:
+            try:
+                if p.exists():
+                    p.unlink()
+            except:
+                pass
+        raise RuntimeError(f"Failed to save data: {e}") from e
 
     return output_path
 

@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # Web application
+  app:
+    build: .
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./simulation_data:/app/simulation_data
+      - ./simulation_timeseries:/app/simulation_timeseries
+      - ./torch_data:/app/torch_data
+      - ./configs:/app/configs
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python app.py --port 8050
+
+  # Data generation (run with: docker-compose run generate)
+  generate:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./simulation_data:/app/simulation_data
+      - ./simulation_timeseries:/app/simulation_timeseries
+      - ./torch_data:/app/torch_data
+      - ./configs:/app/configs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+    command: python app.py --generate --samples 1000 --workers 8
+    profiles:
+      - tools
+
+  # Training (run with: docker-compose run train)
+  train:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./configs:/app/configs
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python app.py --train --epochs 100 --patience 15
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - tools
