@@ -108,11 +108,12 @@ def load_model():
             else:
                 model_size = 'small'
 
-            # Check for SpecBoost
-            use_specboost = any('boost_stages' in k for k in state_dict.keys())
+            # Check for SpecBoost (has residual_modules)
+            use_specboost = any('residual_modules' in k for k in state_dict.keys())
 
             print(f"Detected FNO v2: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
             print(f"Architecture: {model_size}, width={width}, modes=({modes1},{modes2}), specboost={use_specboost}")
+            print(f"Checkpoint keys sample: {list(state_dict.keys())[:5]}")
 
             MODEL = create_enhanced_model(
                 nx=nx, ny=ny, n_times=n_times, n_params=n_params,
@@ -150,9 +151,27 @@ def load_model():
                 device=device
             )
 
+        # Load weights and check what was loaded
+        model_keys = set(MODEL.state_dict().keys())
+        ckpt_keys = set(state_dict.keys())
+        matched = model_keys & ckpt_keys
+        missing = model_keys - ckpt_keys
+        unexpected = ckpt_keys - model_keys
+
+        if len(missing) > 0:
+            print(f"WARNING: {len(missing)} missing keys (model has but checkpoint doesn't)")
+            print(f"  Missing: {list(missing)[:3]}...")
+        if len(unexpected) > 0:
+            print(f"WARNING: {len(unexpected)} unexpected keys (checkpoint has but model doesn't)")
+            print(f"  Unexpected: {list(unexpected)[:3]}...")
+
+        if len(matched) < len(model_keys) * 0.5:
+            print(f"ERROR: Only {len(matched)}/{len(model_keys)} keys matched! Model likely incompatible.")
+            return False
+
         MODEL.load_state_dict(state_dict, strict=False)
         MODEL.eval()
-        print(f"Loaded model from {checkpoint_path}")
+        print(f"Loaded {len(matched)}/{len(model_keys)} weights from {checkpoint_path}")
         return True
     except Exception as e:
         print(f"Failed to load model: {e}")
@@ -444,7 +463,13 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
 
         with torch.no_grad():
             pred = MODEL(params)
+            # pred shape: (batch, n_times, nx, ny) -> need (n_times, ny, nx)
             traj_nn_raw = pred[0].cpu().numpy().transpose(0, 2, 1)
+
+            # Clip to valid concentration range
+            traj_nn_raw = np.clip(traj_nn_raw, 0, 0.635)
+
+            print(f"NN pred shape: {traj_nn_raw.shape}, range: [{traj_nn_raw.min():.4f}, {traj_nn_raw.max():.4f}]")
 
             from scipy.ndimage import zoom
             if traj_nn_raw.shape[1:] != (ny, nx):
