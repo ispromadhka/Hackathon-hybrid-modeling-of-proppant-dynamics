@@ -1,39 +1,54 @@
 # Proppant Transport Hybrid Simulator
 
-Neural network surrogate model (FNO) for accelerating proppant transport simulations in hydraulic fracturing.
+Neural network surrogate model (SuperB-FNO) for accelerating proppant transport simulations in hydraulic fracturing.
 
-## Quick Start with Docker
+## Quick Start
+
+### New Web Interface (FastAPI)
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run new web interface
+python web/server.py
+
+# Open http://localhost:8050
+```
+
+Features:
+- Light/Dark theme toggle
+- Real-time NN vs NS comparison
+- Synchronized timelapse with play/pause
+- Interactive Plotly.js plots with hover
+- Metrics: speedup, L2 error, computation times
+
+### Legacy Dash Interface
+
+```bash
+python app.py --port 8050
+```
+
+## Pretrained Model
+
+If you don't have a trained model, the system will use a pretrained checkpoint.
+
+To specify a custom pretrained model, set the path in `checkpoints/best.pt` or modify `web/server.py`:
+```python
+CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
+```
+
+## Docker
 
 ```bash
 # Build and run web interface
 docker-compose up app
 
-# Open http://localhost:8050 in browser
-```
-
-### Generate Training Data (CPU parallelized)
-
-```bash
+# Generate training data (CPU parallelized)
 docker-compose run generate
-```
 
-This runs 8 parallel workers to generate 1000 samples. Edit `docker-compose.yml` to change:
-- `--samples 1000` — number of simulations
-- `--workers 8` — parallel CPU workers
-
-### Train FNO Model (GPU)
-
-```bash
+# Train model (GPU)
 docker-compose run train
-```
-
-Requires NVIDIA GPU with Docker GPU support.
-
-## Local Installation
-
-```bash
-pip install -r requirements.txt
-python app.py --port 8050
 ```
 
 ## CLI Commands
@@ -42,10 +57,10 @@ python app.py --port 8050
 # Generate training data
 python app.py --generate --samples 500 --workers 8
 
-# Train FNO model
+# Train SuperB-FNO model
 python app.py --train --epochs 100 --patience 15
 
-# Run web app
+# Run legacy Dash app
 python app.py --port 8050
 ```
 
@@ -61,28 +76,30 @@ python app.py --port 8050
 | `--patience` | 15 | Early stopping patience |
 | `--port` | 8050 | Web app port |
 
-## FNO Architecture
+## SuperB-FNO Architecture
 
-**Input (9 parameters):**
-- `c_inlet` — inlet concentration [0.15, 0.40]
-- `Q_inlet` — flow rate [0.02, 0.10] m²/s
-- `g` — gravity [0.0, 9.81] m/s²
-- `mu0` — base viscosity [0.001, 0.010] Pa·s
-- `r_particle` — particle radius [0.0001, 0.0003] m
-- `inlet_fraction` — inlet height fraction [0.3, 0.7]
-- `rk_stages` — RK3 time integration (fixed)
-- `lim_type` — Koren limiter (fixed)
-- `injection_mode` — injection pattern [0, 1, 2]
+Multi-scale Fourier Neural Operator with:
+- Residual connections
+- Spectral attention
+- Parameter conditioning at bottleneck
+- ~8.6M parameters
+
+**Input (7 parameters):**
+| Parameter | Description | Range |
+|-----------|-------------|-------|
+| `c_in` | Inlet concentration | [0.1, 0.5] |
+| `w0` | Fracture aperture | [0.001, 0.01] m |
+| `mu0` | Base viscosity | [0.0001, 0.01] Pa·s |
+| `Q` | Flow rate | [0.01, 0.1] m²/s |
+| `chi` | Chi parameter | [1.0, 10.0] |
+| `c_in_times` | Injection time | [10, 200] s |
+| `dT` | Time step | [1.0, 5.0] s |
+
+> **Note**: Q is entered as positive in the UI but internally negated for the solver.
 
 **Output:**
-- Concentration field c(x,y,t) over 100 time steps
-- Grid: 120×60 (Lx=60m, Ly=30m)
-
-**Architecture:**
-- 4 Fourier layers
-- Width: 48 channels
-- Fourier modes: (12, 8)
-- ~10M parameters
+- Concentration field c(x,y,t) over 201 time steps
+- Grid: 100×100 (Lx=60m, Ly=60m)
 
 ## Physics Model
 
@@ -106,31 +123,37 @@ Vₚ = Vf + Vslip(c)                    — proppant velocity
 ## Project Structure
 
 ```
-├── app.py                 # Main CLI
-├── Dockerfile
-├── docker-compose.yml
+├── app.py                 # Legacy CLI
+├── web/
+│   ├── server.py          # FastAPI backend
+│   ├── templates/
+│   │   └── index.html     # Main page
+│   └── static/
+│       ├── css/style.css  # Styles with theme support
+│       └── js/app.js      # Frontend logic
 ├── src/
 │   ├── solver/
 │   │   ├── CPU_solver/    # Physics solver
 │   │   └── to_torch.py    # Data conversion
 │   ├── model/
-│   │   └── fno.py         # FNO architecture
+│   │   └── fno.py         # SuperB-FNO architecture
 │   ├── training/
 │   │   ├── dataset.py     # Data generation
 │   │   └── train.py       # Training loop
 │   └── visualization/
-│       └── app.py         # Dash web UI
-├── data/                  # Training data
-├── checkpoints/           # Model weights
-└── configs/               # Generation configs
+│       └── app.py         # Legacy Dash UI
+├── checkpoints/           # Model weights (best.pt)
+├── configs/               # Generation configs
+└── data/processed/        # Training data
 ```
 
-## Data Pipeline
+## Training Metrics
 
-1. **Generate**: `simulation_timeseries/*_series.npz`
-2. **Convert**: `torch_data/data.pt`
-3. **Process**: `data/processed/sample_*.npz`
+The training script shows:
+- **MAE** — Mean Absolute Error
+- **Acc%** — Predictions within 5% tolerance
+- **R²%** — Coefficient of determination
 
 ## Goal
 
-Replace numerical solver (~5s per simulation) with FNO for 100-1000x speedup.
+Replace numerical solver (~5s per simulation) with SuperB-FNO for 100-1000x speedup.
