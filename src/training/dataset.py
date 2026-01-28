@@ -471,21 +471,44 @@ def create_dataloaders(
 
 
 if __name__ == '__main__':
-    output_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
+    import argparse
 
-    # Test with small dataset
+    parser = argparse.ArgumentParser(description='Generate proppant transport dataset')
+    parser.add_argument('--samples', '-n', type=int, default=100, help='Number of samples to generate')
+    parser.add_argument('--nx', type=int, default=60, help='Grid size in x')
+    parser.add_argument('--ny', type=int, default=30, help='Grid size in y')
+    parser.add_argument('--T', type=float, default=100.0, help='Total simulation time [s]')
+    parser.add_argument('--dT', type=float, default=5.0, help='Output time step [s]')
+    parser.add_argument('--workers', '-j', type=int, default=1, help='Number of parallel workers')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--output', '-o', type=str, default=None, help='Output directory')
+
+    args = parser.parse_args()
+
+    if args.output:
+        output_dir = Path(args.output)
+    else:
+        output_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
+
+    print(f"Generating {args.samples} samples...")
+    print(f"Grid: {args.nx}x{args.ny}, T={args.T}s, dT={args.dT}s")
+    print(f"Workers: {args.workers}, Seed: {args.seed}")
+    print(f"Output: {output_dir}")
+    print()
+
     generate_dataset(
         output_dir,
-        n_samples=5,
-        grid_size=(50, 25),
-        T=80.0,
-        dT=4.0,
+        n_samples=args.samples,
+        grid_size=(args.nx, args.ny),
+        T=args.T,
+        dT=args.dT,
+        n_workers=args.workers,
+        seed=args.seed,
     )
 
+    # Verify
     dataset = ProppantDataset(output_dir)
-    print(f"Dataset size: {len(dataset)}")
-
+    print(f"\nDataset size: {len(dataset)}")
     sample = dataset[0]
     print(f"Trajectory shape: {sample['trajectory'].shape}")
     print(f"Params shape: {sample['params'].shape}")
-    print(f"Params: {sample['params']}")
