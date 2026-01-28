@@ -370,6 +370,13 @@ class SpecBoostFNO(nn.Module):
         self.base_model = base_model
         self.n_boost_stages = n_boost_stages
 
+        # Expose base_model attributes for compatibility
+        self.n_params = base_model.n_params
+        self.nx = base_model.nx
+        self.ny = base_model.ny
+        self.n_times = base_model.n_times
+        self.width = base_model.width
+
         # Residual modules (smaller than base)
         self.residual_modules = nn.ModuleList()
         for _ in range(n_boost_stages):

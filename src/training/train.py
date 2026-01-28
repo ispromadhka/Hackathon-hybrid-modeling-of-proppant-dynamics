@@ -298,6 +298,8 @@ class Trainer:
             n_times = pred.shape[1]
             target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
             # target now: (batch, n_times, nx, ny)
+            # Normalize target to [0, 1] to match Sigmoid output
+            target = target / 0.635
 
             loss = self.criterion(pred, target)
             loss.backward()
@@ -326,6 +328,8 @@ class Trainer:
             # Transpose target to match pred
             n_times = pred.shape[1]
             target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
+            # Normalize target to [0, 1] to match Sigmoid output
+            target = target / 0.635
 
             total_loss += self.criterion(pred, target).item()
 

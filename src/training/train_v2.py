@@ -265,6 +265,8 @@ def train_worker(rank, world_size, gpu_ids, args):
             pred = model(params)
             n_t = pred.shape[1]
             target = trajectory[:, :n_t, :, :].permute(0, 1, 3, 2)
+            # Normalize target to [0, 1] to match Sigmoid output
+            target = target / 0.635
 
             loss = criterion(pred, target)
             loss.backward()
@@ -294,6 +296,8 @@ def train_worker(rank, world_size, gpu_ids, args):
                 pred = model(params)
                 n_t = pred.shape[1]
                 target = trajectory[:, :n_t, :, :].permute(0, 1, 3, 2)
+                # Normalize target to [0, 1] to match Sigmoid output
+                target = target / 0.635
 
                 loss = criterion(pred, target)
                 val_loss += loss.item()

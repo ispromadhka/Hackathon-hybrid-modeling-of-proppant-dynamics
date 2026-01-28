@@ -64,25 +64,29 @@ def load_model():
 
         state_dict = checkpoint['model_state_dict']
 
-        # Detect model architecture from checkpoint weights
-        if 'grid_x' in state_dict:
-            grid_shape = state_dict['grid_x'].shape
-            nx = grid_shape[2]
-            ny = grid_shape[3]
-        else:
-            nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
-            ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
-
-        # Detect if it's v2 model
+        # Detect if it's v2 model (check first, needed for grid detection)
         # SpecBoost v2: has base_model.lift.0.weight
         # Plain v2: has lift.0.weight
         # v1: has lift.weight
         is_specboost = any('base_model.' in k for k in state_dict.keys())
         is_v2 = is_specboost or 'lift.0.weight' in state_dict
+        prefix = 'base_model.' if is_specboost else ''
+
+        # Detect model architecture from checkpoint weights
+        grid_key = f'{prefix}grid_x'
+        if grid_key in state_dict:
+            grid_shape = state_dict[grid_key].shape
+            nx = grid_shape[2]
+            ny = grid_shape[3]
+            print(f"Grid from checkpoint: nx={nx}, ny={ny}")
+        else:
+            nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
+            ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
+            print(f"Grid from metadata: nx={nx}, ny={ny}")
 
         if is_v2:
             # V2 model detection - handle both plain v2 and SpecBoost v2
-            prefix = 'base_model.' if is_specboost else ''
+            # (prefix already set above)
 
             # Detect dimensions
             lift_key = f'{prefix}lift.0.weight'
@@ -207,35 +211,35 @@ app.layout = html.Div([
             html.H4("Parameters", style={'color': '#2c3e50', 'marginTop': '0'}),
 
             html.Label("Inlet Concentration c₀", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='c_inlet', min=0.1, max=0.5, value=0.35, step=0.05,
-                      marks={0.1: '0.1', 0.25: '0.25', 0.4: '0.4', 0.5: '0.5'}),
+            dcc.Input(id='c_inlet', type='number', min=0.1, max=0.5, value=0.35, step=0.01,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
-            html.Label("Flow Rate Q [m²/s]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
-            dcc.Slider(id='Q_inlet', min=0.02, max=0.1, value=0.05, step=0.01,
-                      marks={0.02: '0.02', 0.05: '0.05', 0.1: '0.1'}),
+            html.Label("Flow Rate Q [m²/s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Input(id='Q_inlet', type='number', min=0.01, max=0.2, value=0.05, step=0.01,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
-            html.Label("Gravity [m/s²]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
-            dcc.Slider(id='gravity', min=0, max=15, value=9.81, step=1,
-                      marks={0: '0', 5: '5', 10: '10', 15: '15'}),
+            html.Label("Gravity [m/s²]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Input(id='gravity', type='number', min=0, max=20, value=9.81, step=0.1,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
-            html.Label("Viscosity μ₀ [mPa·s]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
-            dcc.Slider(id='viscosity', min=1, max=50, value=1, step=1,
-                      marks={1: '1', 10: '10', 25: '25', 50: '50'}),
+            html.Label("Viscosity μ₀ [mPa·s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Input(id='viscosity', type='number', min=1, max=100, value=1, step=1,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
-            html.Label("Particle Radius [μm]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
-            dcc.Slider(id='r_particle', min=100, max=500, value=200, step=50,
-                      marks={100: '100', 200: '200', 300: '300', 500: '500'}),
+            html.Label("Particle Radius [μm]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Input(id='r_particle', type='number', min=50, max=1000, value=200, step=10,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Hr(),
             html.H4("Simulation", style={'color': '#2c3e50'}),
 
             html.Label("Injection Duration [s]", style={'fontWeight': 'bold'}),
-            dcc.Slider(id='injection_duration', min=1, max=30, value=5, step=1,
-                      marks={1: '1', 5: '5', 10: '10', 20: '20', 30: '30'}),
+            dcc.Input(id='injection_duration', type='number', min=1, max=60, value=5, step=1,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
-            html.Label("Total Time [s]", style={'fontWeight': 'bold', 'marginTop': '8px'}),
-            dcc.Slider(id='sim_time', min=20, max=200, value=80, step=20,
-                      marks={20: '20', 50: '50', 100: '100', 200: '200'}),
+            html.Label("Total Time [s]", style={'fontWeight': 'bold', 'marginTop': '10px'}),
+            dcc.Input(id='sim_time', type='number', min=10, max=400, value=80, step=10,
+                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}),
 
             html.Br(),
             html.Button('RUN SIMULATION', id='run-btn', n_clicks=0,
@@ -413,6 +417,24 @@ def create_empty_figure(title, message):
 def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injection_duration, sim_time):
     global MODEL
 
+    # Validate and set defaults for None values
+    c_inlet = float(c_inlet) if c_inlet is not None else 0.35
+    Q_inlet = float(Q_inlet) if Q_inlet is not None else 0.05
+    gravity = float(gravity) if gravity is not None else 9.81
+    viscosity = float(viscosity) if viscosity is not None else 1.0
+    r_particle = float(r_particle) if r_particle is not None else 200.0
+    injection_duration = float(injection_duration) if injection_duration is not None else 5.0
+    sim_time = float(sim_time) if sim_time is not None else 80.0
+
+    # Clamp to valid ranges
+    c_inlet = max(0.1, min(0.5, c_inlet))
+    Q_inlet = max(0.01, min(0.2, Q_inlet))
+    gravity = max(0, min(20, gravity))
+    viscosity = max(1, min(100, viscosity))
+    r_particle = max(50, min(1000, r_particle))
+    injection_duration = max(1, min(60, injection_duration))
+    sim_time = max(10, min(400, sim_time))
+
     nx, ny = 60, 30
     Lx, Ly = 60.0, 30.0
     n_output_steps = 21
@@ -476,15 +498,16 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
 
         with torch.no_grad():
             pred = MODEL(params)
-            print(f"Raw pred shape: {pred.shape}, range: [{pred.min():.4f}, {pred.max():.4f}]")
+            print(f"[NN] Raw pred shape: {pred.shape}, range: [{pred.min().item():.4f}, {pred.max().item():.4f}]", flush=True)
 
             # pred shape: (batch, n_times, nx, ny) -> need (n_times, ny, nx)
-            traj_nn_raw = pred[0].cpu().numpy().transpose(0, 2, 1)
+            # Model outputs [0, 1] via Sigmoid, scale to concentration [0, 0.635]
+            traj_nn_raw = pred[0].cpu().numpy().transpose(0, 2, 1) * 0.635
 
-            print(f"After transpose: shape={traj_nn_raw.shape}, range=[{traj_nn_raw.min():.4f}, {traj_nn_raw.max():.4f}]")
-            print(f"First timestep mean: {traj_nn_raw[0].mean():.4f}, last: {traj_nn_raw[-1].mean():.4f}")
+            print(f"[NN] After transpose & scale: {traj_nn_raw.shape}, range=[{traj_nn_raw.min():.4f}, {traj_nn_raw.max():.4f}]", flush=True)
+            print(f"[NN] Timestep means: t0={traj_nn_raw[0].mean():.4f}, t_mid={traj_nn_raw[len(traj_nn_raw)//2].mean():.4f}, t_last={traj_nn_raw[-1].mean():.4f}", flush=True)
 
-            # Clip to valid concentration range
+            # Clip to valid concentration range (safety)
             traj_nn_raw = np.clip(traj_nn_raw, 0, 0.635)
 
             from scipy.ndimage import zoom
