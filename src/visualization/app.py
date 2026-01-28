@@ -73,28 +73,41 @@ def load_model():
             nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
             ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
 
-        # Detect if it's v2 model (has lift.0.weight instead of lift.weight)
-        is_v2 = 'lift.0.weight' in state_dict
+        # Detect if it's v2 model
+        # SpecBoost v2: has base_model.lift.0.weight
+        # Plain v2: has lift.0.weight
+        # v1: has lift.weight
+        is_specboost = any('base_model.' in k for k in state_dict.keys())
+        is_v2 = is_specboost or 'lift.0.weight' in state_dict
 
         if is_v2:
-            # V2 model detection
-            in_channels = state_dict['lift.0.weight'].shape[1]
-            n_params = in_channels - 2
-            width = state_dict['lift.0.weight'].shape[0]
+            # V2 model detection - handle both plain v2 and SpecBoost v2
+            prefix = 'base_model.' if is_specboost else ''
+
+            # Detect dimensions
+            lift_key = f'{prefix}lift.0.weight'
+            if lift_key in state_dict:
+                in_channels = state_dict[lift_key].shape[1]
+                n_params = in_channels - 2
+                width = state_dict[lift_key].shape[0]
+            else:
+                n_params = 9
+                width = 192  # Default to xlarge
 
             # Detect n_times from project layer
+            n_times = 26
             for key in state_dict:
-                if 'project' in key and 'weight' in key:
-                    if state_dict[key].shape[0] < 100:  # n_times is small
-                        n_times = state_dict[key].shape[0]
+                if 'project' in key and 'weight' in key and 'base_model' in key == is_specboost:
+                    shape = state_dict[key].shape
+                    if len(shape) >= 1 and shape[0] < 100:
+                        n_times = shape[0]
                         break
-            else:
-                n_times = 26
 
             # Detect modes
-            if 'fno_blocks.0.spectral_conv.weights1' in state_dict:
-                modes1 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[2]
-                modes2 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[3]
+            modes_key = f'{prefix}fno_blocks.0.spectral_conv.weights1'
+            if modes_key in state_dict:
+                modes1 = state_dict[modes_key].shape[2]
+                modes2 = state_dict[modes_key].shape[3]
             else:
                 modes1, modes2 = 32, 16
 
@@ -109,11 +122,11 @@ def load_model():
                 model_size = 'small'
 
             # Check for SpecBoost (has residual_modules)
-            use_specboost = any('residual_modules' in k for k in state_dict.keys())
+            use_specboost = is_specboost
 
             print(f"Detected FNO v2: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
             print(f"Architecture: {model_size}, width={width}, modes=({modes1},{modes2}), specboost={use_specboost}")
-            print(f"Checkpoint keys sample: {list(state_dict.keys())[:5]}")
+            print(f"Keys prefix: '{prefix}', sample: {[k for k in list(state_dict.keys())[:3]]}")
 
             MODEL = create_enhanced_model(
                 nx=nx, ny=ny, n_times=n_times, n_params=n_params,
