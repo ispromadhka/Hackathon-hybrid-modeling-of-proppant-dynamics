@@ -24,6 +24,14 @@ def main():
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
+    parser.add_argument('--physics-loss', action='store_true', default=True, help='Use physics-informed loss (mass conservation, spectral)')
+    parser.add_argument('--no-physics-loss', action='store_true', help='Disable physics-informed loss')
+
+    # GPU parallelization options
+    parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training (AMP)')
+    parser.add_argument('--no-multi-gpu', action='store_true', help='Disable multi-GPU DataParallel')
+    parser.add_argument('--num-workers', type=int, default=4, help='Data loading workers (0 = main process)')
+    parser.add_argument('--grad-accum', type=int, default=1, help='Gradient accumulation steps')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Web app host')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
@@ -44,8 +52,21 @@ def main():
 
     elif args.train:
         from src.training.train import main as train_main
-        print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})...")
-        train_main(epochs=args.epochs, lr=args.lr, patience=args.patience)
+        use_physics = args.physics_loss and not args.no_physics_loss
+        use_amp = not args.no_amp
+        use_multi_gpu = not args.no_multi_gpu
+        print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})")
+        print(f"  Physics loss: {use_physics}, AMP: {use_amp}, Multi-GPU: {use_multi_gpu}")
+        train_main(
+            epochs=args.epochs,
+            lr=args.lr,
+            patience=args.patience,
+            use_physics_loss=use_physics,
+            use_amp=use_amp,
+            use_multi_gpu=use_multi_gpu,
+            num_workers=args.num_workers,
+            gradient_accumulation=args.grad_accum,
+        )
 
     elif args.legacy:
         # Legacy Dash interface
