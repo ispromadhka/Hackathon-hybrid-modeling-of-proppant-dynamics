@@ -72,15 +72,21 @@ class SpectralAttention(nn.Module):
         self.freq_weight = nn.Parameter(torch.ones(1, channels, modes1, modes2))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        size1, size2 = x.shape[-2], x.shape[-1]
+        batch, channels, size1, size2 = x.shape
         x_ft = torch.fft.rfft2(x)
 
-        # Apply learnable frequency weighting
+        # Apply learnable frequency weighting (no in-place ops for autograd)
         m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
         mask = F.softplus(self.freq_weight[:, :, :m1, :m2])
-        x_ft[:, :, :m1, :m2] = x_ft[:, :, :m1, :m2] * mask
 
-        return torch.fft.irfft2(x_ft, s=(size1, size2))
+        # Create output tensor and fill non-in-place
+        out_ft = torch.zeros_like(x_ft)
+        out_ft[:, :, :m1, :m2] = x_ft[:, :, :m1, :m2] * mask
+        # Copy remaining frequencies unchanged
+        out_ft[:, :, m1:, :] = x_ft[:, :, m1:, :]
+        out_ft[:, :, :m1, m2:] = x_ft[:, :, :m1, m2:]
+
+        return torch.fft.irfft2(out_ft, s=(size1, size2))
 
 
 class FNOBlock(nn.Module):
