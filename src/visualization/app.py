@@ -476,13 +476,16 @@ def run_comparison(n, c_inlet, Q_inlet, gravity, viscosity, r_particle, injectio
 
         with torch.no_grad():
             pred = MODEL(params)
+            print(f"Raw pred shape: {pred.shape}, range: [{pred.min():.4f}, {pred.max():.4f}]")
+
             # pred shape: (batch, n_times, nx, ny) -> need (n_times, ny, nx)
             traj_nn_raw = pred[0].cpu().numpy().transpose(0, 2, 1)
 
+            print(f"After transpose: shape={traj_nn_raw.shape}, range=[{traj_nn_raw.min():.4f}, {traj_nn_raw.max():.4f}]")
+            print(f"First timestep mean: {traj_nn_raw[0].mean():.4f}, last: {traj_nn_raw[-1].mean():.4f}")
+
             # Clip to valid concentration range
             traj_nn_raw = np.clip(traj_nn_raw, 0, 0.635)
-
-            print(f"NN pred shape: {traj_nn_raw.shape}, range: [{traj_nn_raw.min():.4f}, {traj_nn_raw.max():.4f}]")
 
             from scipy.ndimage import zoom
             if traj_nn_raw.shape[1:] != (ny, nx):
