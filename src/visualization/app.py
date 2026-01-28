@@ -65,24 +65,32 @@ def load_model():
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
+    # Detect grid size from state dict
     if 'grid_x' in state_dict:
         grid_shape = state_dict['grid_x'].shape
         nx = grid_shape[2]
         ny = grid_shape[3]
     else:
-        nx = int(DATA_META.get('nx', 64)) if DATA_META else 64
-        ny = int(DATA_META.get('ny', 32)) if DATA_META else 32
+        nx = int(DATA_META.get('nx', 100)) if DATA_META else 100
+        ny = int(DATA_META.get('ny', 100)) if DATA_META else 100
 
-    if 'lift.weight' in state_dict:
+    # Detect n_params: SuperB-FNO uses lift.0.weight, old FNO uses lift.weight
+    if 'lift.0.weight' in state_dict:
+        in_channels = state_dict['lift.0.weight'].shape[1]
+        n_params = in_channels - 2
+    elif 'lift.weight' in state_dict:
         in_channels = state_dict['lift.weight'].shape[1]
         n_params = in_channels - 2
     else:
         n_params = int(len(DATA_META.get('param_names', []))) if DATA_META else 7
 
-    if 'project.2.weight' in state_dict:
+    # Detect n_times: SuperB-FNO uses project.5.weight, old uses project.2.weight
+    if 'project.5.weight' in state_dict:
+        n_times = state_dict['project.5.weight'].shape[0]
+    elif 'project.2.weight' in state_dict:
         n_times = state_dict['project.2.weight'].shape[0]
     else:
-        n_times = int(DATA_META.get('n_times', 26)) if DATA_META else 26
+        n_times = int(DATA_META.get('n_times', 201)) if DATA_META else 201
 
     MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device)
     MODEL.load_state_dict(state_dict, strict=False)

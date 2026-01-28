@@ -1,5 +1,5 @@
 """
-Training script for FNO proppant model.
+Training script for SuperB-FNO proppant model.
 """
 
 import torch
@@ -18,35 +18,76 @@ from src.model.fno import create_model
 from src.training.dataset import ProppantDataset, create_dataloaders
 
 
-import torch.nn.functional as F
+class CombinedLoss(nn.Module):
+    """
+    Combined loss for proppant transport:
+    - MSE for accurate predictions
+    - Relative L2 for scale-invariance
+    - Temporal consistency for smooth evolution
+    """
 
-class RelativeLpLoss(nn.Module):
-    def __init__(self, p: int = 2):
+    def __init__(self, mse_weight: float = 1.0, rel_weight: float = 0.5, temporal_weight: float = 0.1):
         super().__init__()
-        self.p = p
-
-    def rel(self, x, y):
-        num_examples = x.size()[0]
-        diff_norms = torch.norm(x.reshape(num_examples, -1) - y.reshape(num_examples, -1), self.p, 1)
-        y_norms = torch.norm(y.reshape(num_examples, -1), self.p, 1)
-        return torch.mean(diff_norms / (y_norms + 1e-4))
+        self.mse_weight = mse_weight
+        self.rel_weight = rel_weight
+        self.temporal_weight = temporal_weight
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        rel_loss = self.rel(pred, target)
-        mse_loss = F.mse_loss(pred, target)
+        # MSE loss
+        mse_loss = torch.mean((pred - target) ** 2)
 
-        neg_penalty = torch.mean(F.relu(-pred)**2) * 10.0
+        # Relative L2 loss (with epsilon for stability)
+        diff_norm = torch.norm(pred - target, p=2)
+        target_norm = torch.norm(target, p=2) + 1e-6
+        rel_loss = diff_norm / target_norm
 
-        n_cells = pred.shape[2] * pred.shape[3]
-        mass_pred = torch.sum(pred, dim=(2, 3)) / n_cells
-        mass_target = torch.sum(target, dim=(2, 3)) / n_cells
-        mass_loss = F.mse_loss(mass_pred, mass_target)
+        # Temporal consistency: penalize large jumps between frames
+        if pred.shape[1] > 1:
+            pred_diff = pred[:, 1:] - pred[:, :-1]
+            target_diff = target[:, 1:] - target[:, :-1]
+            temporal_loss = torch.mean((pred_diff - target_diff) ** 2)
+        else:
+            temporal_loss = torch.tensor(0.0, device=pred.device)
 
-        return rel_loss + 5.0 * mse_loss + neg_penalty + mass_loss
+        total = self.mse_weight * mse_loss + self.rel_weight * rel_loss + self.temporal_weight * temporal_loss
+        return total
+
+
+def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict:
+    """Compute evaluation metrics."""
+    with torch.no_grad():
+        # MAE (Mean Absolute Error)
+        mae = torch.mean(torch.abs(pred - target)).item()
+
+        # RMSE
+        rmse = torch.sqrt(torch.mean((pred - target) ** 2)).item()
+
+        # Relative L2 error
+        rel_l2 = (torch.norm(pred - target) / (torch.norm(target) + 1e-6)).item()
+
+        # Max error
+        max_err = torch.max(torch.abs(pred - target)).item()
+
+        # Accuracy: % of predictions within 5% of target range [0, 1]
+        accuracy = (torch.abs(pred - target) < 0.05).float().mean().item() * 100
+
+        # R² score
+        ss_res = torch.sum((target - pred) ** 2)
+        ss_tot = torch.sum((target - target.mean()) ** 2) + 1e-6
+        r2 = (1 - ss_res / ss_tot).item()
+
+    return {
+        'mae': mae,
+        'rmse': rmse,
+        'rel_l2': rel_l2,
+        'max_err': max_err,
+        'accuracy': accuracy,
+        'r2': max(0, r2 * 100),  # R² as percentage
+    }
 
 
 class Trainer:
-    """Training manager for FNO model with early stopping."""
+    """Training manager for SuperB-FNO model."""
 
     def __init__(
         self,
@@ -57,8 +98,8 @@ class Trainer:
         lr: float = 1e-3,
         n_epochs: int = 100,
         checkpoint_dir: Path = None,
-        patience: int = 15,  # Early stopping patience
-        min_delta: float = 1e-4  # Minimum improvement threshold
+        patience: int = 15,
+        min_delta: float = 1e-4
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -78,8 +119,7 @@ class Trainer:
                 eta_min=lr * 0.01
             )
 
-        # Relative L2 loss (better for PDEs than MSE)
-        self.criterion = RelativeLpLoss(p=2)
+        self.criterion = CombinedLoss(mse_weight=1.0, rel_weight=0.5, temporal_weight=0.1)
 
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
@@ -88,8 +128,8 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
+        self.best_accuracy = 0.0
 
-        # Early stopping
         self.patience = patience
         self.min_delta = min_delta
         self.patience_counter = 0
@@ -107,7 +147,8 @@ class Trainer:
 
             pred = self.model(params)
 
-            # Match dimensions
+            # Match dimensions: trajectory is (batch, n_times, ny, nx)
+            # Model outputs (batch, n_times, nx, ny)
             n_times = pred.shape[1]
             target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
 
@@ -122,9 +163,10 @@ class Trainer:
         return total_loss / len(self.train_loader)
 
     @torch.no_grad()
-    def validate(self) -> float:
+    def validate(self) -> tuple:
         self.model.eval()
         total_loss = 0.0
+        all_metrics = []
 
         for batch in self.val_loader:
             params = batch['params'].to(self.device)
@@ -135,11 +177,22 @@ class Trainer:
             n_times = pred.shape[1]
             target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
 
-            total_loss += self.criterion(pred, target).item()
+            loss = self.criterion(pred, target)
+            total_loss += loss.item()
 
-        return total_loss / len(self.val_loader)
+            metrics = compute_metrics(pred, target)
+            all_metrics.append(metrics)
 
-    def save_checkpoint(self, epoch: int, is_best: bool = False):
+        avg_loss = total_loss / len(self.val_loader)
+
+        # Average metrics
+        avg_metrics = {}
+        for key in all_metrics[0].keys():
+            avg_metrics[key] = sum(m[key] for m in all_metrics) / len(all_metrics)
+
+        return avg_loss, avg_metrics
+
+    def save_checkpoint(self, epoch: int, is_best: bool = False, metrics: dict = None):
         if not self.checkpoint_dir:
             return
 
@@ -147,7 +200,8 @@ class Trainer:
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss
+            'best_val_loss': self.best_val_loss,
+            'metrics': metrics,
         }
 
         torch.save(checkpoint, self.checkpoint_dir / 'last.pt')
@@ -162,24 +216,26 @@ class Trainer:
         print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print(f"Scheduler: {self.warmup_epochs} warmup epochs + cosine annealing")
         print(f"Early stopping: patience={self.patience}, min_delta={self.min_delta}")
-        print("-" * 80)
+        print("-" * 100)
+        print(f"{'Epoch':>5} | {'Train':>10} | {'Val':>10} | {'MAE':>8} | {'Acc%':>6} | {'R²%':>6} | {'LR':>9} | {'Time':>6} | Status")
+        print("-" * 100)
 
         initial_lr = self.optimizer.param_groups[0]['lr']
 
         for epoch in range(1, n_epochs + 1):
             t0 = time.time()
 
-            # Warmup: linearly increase LR
+            # Warmup
             if epoch <= self.warmup_epochs:
                 warmup_factor = epoch / self.warmup_epochs
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = initial_lr * warmup_factor
 
             train_loss = self.train_epoch()
-            val_loss = self.validate()
-            if epoch > self.warmup_epochs:
-                if self.scheduler is not None:
-                    self.scheduler.step()
+            val_loss, metrics = self.validate()
+
+            if epoch > self.warmup_epochs and self.scheduler is not None:
+                self.scheduler.step()
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
@@ -188,53 +244,43 @@ class Trainer:
             is_best = val_loss < (self.best_val_loss - self.min_delta)
             if is_best:
                 self.best_val_loss = val_loss
+                self.best_accuracy = metrics['accuracy']
                 self.patience_counter = 0
             else:
                 self.patience_counter += 1
 
-            self.save_checkpoint(epoch, is_best)
+            self.save_checkpoint(epoch, is_best, metrics)
 
             elapsed = time.time() - t0
             lr = self.optimizer.param_groups[0]['lr']
 
-            quality = max(0, (1 - val_loss) * 100)
-
             status = ""
             if is_best:
-                status = " [BEST]"
+                status = "[BEST]"
             elif self.patience_counter > 0:
-                status = f" [{self.patience_counter}/{self.patience}]"
+                status = f"[{self.patience_counter}/{self.patience}]"
 
             print(
-                f"Epoch {epoch:3d} | "
-                f"Train: {train_loss:.4e} | "
-                f"Val: {val_loss:.4e} | "
-                f"Quality: {quality:.1f}% | "
-                f"LR: {lr:.2e} | "
-                f"Time: {elapsed:.1f}s"
-                + status
+                f"{epoch:5d} | "
+                f"{train_loss:10.4e} | "
+                f"{val_loss:10.4e} | "
+                f"{metrics['mae']:8.4f} | "
+                f"{metrics['accuracy']:6.1f} | "
+                f"{metrics['r2']:6.1f} | "
+                f"{lr:9.2e} | "
+                f"{elapsed:5.1f}s | "
+                f"{status}"
             )
 
-            # Early stopping check
             if self.patience_counter >= self.patience:
-                print(f"\nEarly stopping triggered after {epoch} epochs (no improvement for {self.patience} epochs)")
+                print(f"\nEarly stopping after {epoch} epochs (no improvement for {self.patience} epochs)")
                 self.early_stop = True
                 break
 
-        print("-" * 80)
+        print("-" * 100)
         print(f"Training finished!")
         print(f"Best validation loss: {self.best_val_loss:.4e}")
-
-        self.model.eval()
-        q_sum = 0
-        with torch.no_grad():
-            for batch in self.val_loader:
-                p, t = batch['params'].to(self.device), batch['trajectory'].to(self.device)
-                pred = self.model(p)
-                target = t[:, :pred.shape[1], :, :].permute(0, 1, 3, 2)
-                mae = torch.mean(torch.abs(pred - target))
-                q_sum += max(0, (1 - mae.item()) * 100)
-        print(f"Best quality: {q_sum/len(self.val_loader):.1f}%")
+        print(f"Best accuracy: {self.best_accuracy:.1f}%")
 
 
 def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
@@ -244,7 +290,6 @@ def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Check if data exists
     if not (data_dir / 'metadata.json').exists():
         print(f"No data found in {data_dir}")
         print("Run: python app.py --generate --samples 500")
@@ -258,23 +303,22 @@ def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
         nx = int(metadata.get('nx', 0))
         ny = int(metadata.get('ny', 0))
         n_times_meta = int(metadata.get('n_times', 0))
-        # Reduce batch size if memory is an issue
         if nx * ny * max(n_times_meta, 1) >= 2_000_000:
-            batch_size = 2
+            batch_size = 4
         if nx * ny * max(n_times_meta, 1) >= 4_000_000:
-            batch_size = 1
+            batch_size = 2
     except Exception:
-        batch_size = 1
+        batch_size = 4
 
     train_loader, val_loader = create_dataloaders(
         data_dir, batch_size=batch_size, train_ratio=0.8, num_workers=0
     )
 
-    # Get n_times and n_params from data
     sample = next(iter(train_loader))
     n_times = sample['trajectory'].shape[1]
     n_params = sample['params'].shape[1]
 
+    print(f"Training for {epochs} epochs (lr={lr}, patience={patience})...")
     print(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val")
     print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps, {n_params} params")
 
