@@ -80,10 +80,12 @@ class Metrics:
         psnr = 10 * math.log10(max_val ** 2 / (mse + 1e-8)) if mse > 0 else 100.0
 
         # Mass Conservation Error (total mass should be similar)
-        pred_mass = pred.sum(dim=(-2, -1))  # Sum over spatial dims
-        target_mass = target.sum(dim=(-2, -1))
-        mass_err = torch.abs(pred_mass - target_mass) / (target_mass + 1e-8)
-        mass_err = mass_err.mean().item()
+        pred_mass = pred.sum(dim=(-2, -1)).mean()  # Sum over spatial, mean over batch/time
+        target_mass = target.sum(dim=(-2, -1)).mean()
+        if target_mass > 0.01:  # Only compute if there's significant mass
+            mass_err = (torch.abs(pred_mass - target_mass) / target_mass).item()
+        else:
+            mass_err = 0.0  # No mass to conserve
 
         # Coverage Accuracy (% agreement on cells with c > 0.1)
         threshold = 0.1

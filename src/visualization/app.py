@@ -17,6 +17,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.solver.solver_wrapper import ProppantSolver
 from src.model.fno import create_model
+from src.model.fno_v2 import create_enhanced_model
 
 app = dash.Dash(__name__, title="Proppant Simulator - NN vs NS")
 
@@ -29,36 +30,100 @@ MODEL = None
 MODEL_METADATA = None
 
 def load_model():
-    """Load trained FNO model if available."""
+    """Load trained FNO model if available. Tries v2 first, then v1."""
     global MODEL, MODEL_METADATA
-    checkpoint_path = Path(__file__).parent.parent.parent / 'checkpoints' / 'best.pt'
+    checkpoint_dir = Path(__file__).parent.parent.parent / 'checkpoints'
     data_path = Path(__file__).parent.parent.parent / 'data' / 'processed' / 'metadata.json'
 
-    if checkpoint_path.exists():
-        try:
-            import json
-            if data_path.exists():
-                with open(data_path) as f:
-                    MODEL_METADATA = json.load(f)
+    # Try v2 first, then v1
+    checkpoint_paths = [
+        checkpoint_dir / 'best_v2.pt',
+        checkpoint_dir / 'last_v2.pt',
+        checkpoint_dir / 'best.pt',
+        checkpoint_dir / 'last.pt',
+    ]
 
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint_path = None
+    for cp in checkpoint_paths:
+        if cp.exists():
+            checkpoint_path = cp
+            break
 
-            state_dict = checkpoint['model_state_dict']
+    if checkpoint_path is None:
+        print("No checkpoint found")
+        return False
 
-            # Detect model architecture from checkpoint weights
-            if 'grid_x' in state_dict:
-                grid_shape = state_dict['grid_x'].shape
-                nx = grid_shape[2]
-                ny = grid_shape[3]
+    try:
+        import json
+        if data_path.exists():
+            with open(data_path) as f:
+                MODEL_METADATA = json.load(f)
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+        state_dict = checkpoint['model_state_dict']
+
+        # Detect model architecture from checkpoint weights
+        if 'grid_x' in state_dict:
+            grid_shape = state_dict['grid_x'].shape
+            nx = grid_shape[2]
+            ny = grid_shape[3]
+        else:
+            nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
+            ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
+
+        # Detect if it's v2 model (has lift.0.weight instead of lift.weight)
+        is_v2 = 'lift.0.weight' in state_dict
+
+        if is_v2:
+            # V2 model detection
+            in_channels = state_dict['lift.0.weight'].shape[1]
+            n_params = in_channels - 2
+            width = state_dict['lift.0.weight'].shape[0]
+
+            # Detect n_times from project layer
+            for key in state_dict:
+                if 'project' in key and 'weight' in key:
+                    if state_dict[key].shape[0] < 100:  # n_times is small
+                        n_times = state_dict[key].shape[0]
+                        break
             else:
-                nx = MODEL_METADATA.get('nx', 64) if MODEL_METADATA else 64
-                ny = MODEL_METADATA.get('ny', 32) if MODEL_METADATA else 32
+                n_times = 26
 
+            # Detect modes
+            if 'fno_blocks.0.spectral_conv.weights1' in state_dict:
+                modes1 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[2]
+                modes2 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[3]
+            else:
+                modes1, modes2 = 32, 16
+
+            # Detect model size from width
+            if width >= 192:
+                model_size = 'xlarge'
+            elif width >= 128:
+                model_size = 'large'
+            elif width >= 96:
+                model_size = 'medium'
+            else:
+                model_size = 'small'
+
+            # Check for SpecBoost
+            use_specboost = any('boost_stages' in k for k in state_dict.keys())
+
+            print(f"Detected FNO v2: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+            print(f"Architecture: {model_size}, width={width}, modes=({modes1},{modes2}), specboost={use_specboost}")
+
+            MODEL = create_enhanced_model(
+                nx=nx, ny=ny, n_times=n_times, n_params=n_params,
+                device=device, model_size=model_size, use_specboost=use_specboost
+            )
+        else:
+            # V1 model
             if 'lift.weight' in state_dict:
                 in_channels = state_dict['lift.weight'].shape[1]
                 n_params = in_channels - 2
-                width = state_dict['lift.weight'].shape[0]  # Detect width from lift layer
+                width = state_dict['lift.weight'].shape[0]
             else:
                 n_params = 5
                 width = 48
@@ -68,17 +133,15 @@ def load_model():
             else:
                 n_times = 26
 
-            # Detect modes and n_layers from checkpoint
             if 'fno_blocks.0.spectral_conv.weights1' in state_dict:
                 modes1 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[2]
                 modes2 = state_dict['fno_blocks.0.spectral_conv.weights1'].shape[3]
             else:
                 modes1, modes2 = 12, 8
 
-            # Count number of FNO layers
             n_layers = sum(1 for k in state_dict if k.startswith('fno_blocks.') and k.endswith('.spectral_conv.weights1'))
 
-            print(f"Detected model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+            print(f"Detected FNO v1: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
             print(f"Architecture: width={width}, modes=({modes1},{modes2}), layers={n_layers}")
 
             MODEL = create_model(
@@ -86,15 +149,16 @@ def load_model():
                 modes1=modes1, modes2=modes2, width=width, n_layers=n_layers,
                 device=device
             )
-            MODEL.load_state_dict(checkpoint['model_state_dict'], strict=False)
-            MODEL.eval()
-            print(f"Loaded FNO model from {checkpoint_path}")
-            return True
-        except Exception as e:
-            print(f"Failed to load model: {e}")
-            import traceback
-            traceback.print_exc()
-            MODEL = None
+
+        MODEL.load_state_dict(state_dict, strict=False)
+        MODEL.eval()
+        print(f"Loaded model from {checkpoint_path}")
+        return True
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        import traceback
+        traceback.print_exc()
+        MODEL = None
     return False
 
 load_model()
