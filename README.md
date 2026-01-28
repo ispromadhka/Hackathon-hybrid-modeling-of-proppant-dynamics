@@ -4,29 +4,28 @@ Neural network surrogate model (SuperB-FNO) for accelerating proppant transport 
 
 ## Quick Start
 
-### New Web Interface (FastAPI)
-
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run new web interface
-python web/server.py
+# Run web interface
+python app.py --port 8050
 
 # Open http://localhost:8050
 ```
 
-Features:
-- Light/Dark theme toggle
-- Real-time NN vs NS comparison
-- Synchronized timelapse with play/pause
-- Interactive Plotly.js plots with hover
-- Metrics: speedup, L2 error, computation times
+### Features
+- Light/Dark theme toggle (button top-right, default: light)
+- Keyboard input for all parameters
+- Synchronized timelapse slider (drag manually or use Play/Pause)
+- Interactive Plotly.js heatmaps with hover tooltips
+- Colorbar on each plot
+- Metrics: NN time, NS time, speedup, L2 error
 
 ### Legacy Dash Interface
 
 ```bash
-python app.py --port 8050
+python app.py --legacy --port 8050
 ```
 
 ## Pretrained Model

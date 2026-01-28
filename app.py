@@ -3,9 +3,10 @@
 Main entry point for Proppant Dynamics Hybrid Simulator.
 
 Usage:
-    python app.py              # Run web app
+    python app.py              # Run web app (FastAPI)
     python app.py --generate   # Generate training data
     python app.py --train      # Train FNO model
+    python app.py --legacy     # Run legacy Dash interface
 """
 
 import argparse
@@ -24,7 +25,9 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Web app host')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--legacy', action='store_true', help='Use legacy Dash interface')
 
     args = parser.parse_args()
 
@@ -44,9 +47,21 @@ def main():
         print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})...")
         train_main(epochs=args.epochs, lr=args.lr, patience=args.patience)
 
-    else:
+    elif args.legacy:
+        # Legacy Dash interface
         from src.visualization.app import run_app
         run_app(debug=args.debug, port=args.port)
+
+    else:
+        # New FastAPI interface
+        import uvicorn
+        print(f"Starting web server at http://{args.host}:{args.port}")
+        uvicorn.run(
+            "web.server:app",
+            host=args.host,
+            port=args.port,
+            reload=args.debug
+        )
 
 
 if __name__ == '__main__':
