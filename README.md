@@ -1,29 +1,51 @@
 # Proppant Transport Hybrid Simulator
 
-Neural network surrogate model for accelerating proppant transport simulations in hydraulic fracturing.
+Neural network surrogate model (FNO) for accelerating proppant transport simulations in hydraulic fracturing.
 
-## Quick Start
+## Quick Start with Docker
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run web interface
-python app.py
+# Build and run web interface
+docker-compose up app
 
 # Open http://localhost:8050 in browser
 ```
 
-## Commands
+### Generate Training Data (CPU parallelized)
+
+```bash
+docker-compose run generate
+```
+
+This runs 8 parallel workers to generate 1000 samples. Edit `docker-compose.yml` to change:
+- `--samples 1000` — number of simulations
+- `--workers 8` — parallel CPU workers
+
+### Train FNO Model (GPU)
+
+```bash
+docker-compose run train
+```
+
+Requires NVIDIA GPU with Docker GPU support.
+
+## Local Installation
+
+```bash
+pip install -r requirements.txt
+python app.py --port 8050
+```
+
+## CLI Commands
 
 ```bash
 # Generate training data
-python app.py --generate --samples 500 --workers -1 --config configs/default.json
+python app.py --generate --samples 500 --workers 8
 
 # Train FNO model
-python app.py --train --epochs 100 --lr 1e-3 --patience 15
+python app.py --train --epochs 100 --patience 15
 
-# Run web app on custom port
+# Run web app
 python app.py --port 8050
 ```
 
@@ -35,160 +57,80 @@ python app.py --port 8050
 | `--train` | - | Train FNO model |
 | `--samples` | 500 | Number of samples to generate |
 | `--workers` | 1 | Parallel workers (-1 = all CPUs) |
-| `--config` | `configs/default.json` | Config file path |
 | `--epochs` | 100 | Training epochs |
-| `--lr` | 1e-3 | Learning rate |
 | `--patience` | 15 | Early stopping patience |
 | `--port` | 8050 | Web app port |
-| `--debug` | False | Debug mode |
 
-## Physics
+## FNO Architecture
 
-Full two-phase proppant transport model:
+**Input (9 parameters):**
+- `c_inlet` — inlet concentration [0.15, 0.40]
+- `Q_inlet` — flow rate [0.02, 0.10] m²/s
+- `g` — gravity [0.0, 9.81] m/s²
+- `mu0` — base viscosity [0.001, 0.010] Pa·s
+- `r_particle` — particle radius [0.0001, 0.0003] m
+- `inlet_fraction` — inlet height fraction [0.3, 0.7]
+- `rk_stages` — RK3 time integration (fixed)
+- `lim_type` — Koren limiter (fixed)
+- `injection_mode` — injection pattern [0, 1, 2]
+
+**Output:**
+- Concentration field c(x,y,t) over 100 time steps
+- Grid: 120×60 (Lx=60m, Ly=30m)
+
+**Architecture:**
+- 4 Fourier layers
+- Width: 48 channels
+- Fourier modes: (12, 8)
+- ~10M parameters
+
+## Physics Model
+
+Two-phase proppant transport:
 
 ```
 ∂(cw)/∂t + ∇·(cwVₚ) = 0              — mass conservation
 Vf = -w²/(12μ(c)) · (∇P - ρ(c)g)     — Darcy's law
 Vₚ = Vf + Vslip(c)                    — proppant velocity
-∇·(Vf + c·Vslip) = 0                  — incompressibility
 ```
 
 **Closure models:**
 - `μ(c) = μ₀(1 - c/c_max)^(-β)` — Krieger-Dougherty viscosity
-- `ρ(c) = ρ_f(1-c) + ρ_p·c` — mixture density
-- `Vslip = V_stokes·(1 - c/c_max)^n` — Richardson-Zaki hindered settling
+- `Vslip = V_stokes·(1 - c/c_max)^n` — Richardson-Zaki settling
 
 **Numerical methods:**
-- Pressure: Sparse direct solver / Conjugate Gradient
-- Transport: TVD/WENO5 reconstruction + RK2/RK3 time integration
+- Pressure: Sparse direct solver
+- Transport: TVD (Koren limiter) + RK3
 - CFL-adaptive time stepping
-
-## Parameters
-
-| Parameter | Description | Range |
-|-----------|-------------|-------|
-| `c` | Proppant volume concentration | [0, 0.635] |
-| `w` | Fracture aperture | [m] |
-| `μ₀` | Base fluid viscosity | [Pa·s] |
-| `β` | Viscosity exponent | 2.5 |
-| `ρ_f`, `ρ_p` | Fluid/proppant densities | [kg/m³] |
-| `g` | Gravity | [m/s²] |
-| `r` | Particle radius | [m] |
 
 ## Project Structure
 
 ```
-├── app.py                 # Main entry point (CLI)
+├── app.py                 # Main CLI
+├── Dockerfile
+├── docker-compose.yml
 ├── src/
 │   ├── solver/
-│   │   ├── CPU_solver/    # Full physics solver
-│   │   │   ├── SystemSolverCPU.py
-│   │   │   ├── PoissonCPU.py
-│   │   │   ├── TransportCPU.py
-│   │   │   ├── TVD_CPU.py
-│   │   │   └── WENO5CPU.py
-│   │   └── solver_wrapper.py
-│   ├── model/             # FNO neural network
-│   │   └── fno.py
-│   ├── training/          # Training pipeline
-│   │   ├── dataset.py
-│   │   └── train.py
-│   └── visualization/     # Web interface
-│       └── app.py
+│   │   ├── CPU_solver/    # Physics solver
+│   │   └── to_torch.py    # Data conversion
+│   ├── model/
+│   │   └── fno.py         # FNO architecture
+│   ├── training/
+│   │   ├── dataset.py     # Data generation
+│   │   └── train.py       # Training loop
+│   └── visualization/
+│       └── app.py         # Dash web UI
 ├── data/                  # Training data
 ├── checkpoints/           # Model weights
-└── requirements.txt
+└── configs/               # Generation configs
 ```
 
-## Data Pipeline (Generation → Training/Visualization)
+## Data Pipeline
 
-The project maintains a single data flow for both training and the Dash UI:
-
-- **Raw simulations**: `simulation_timeseries/*_series.npz` and `simulation_results.csv`
-- **Torch bundle**: `torch_data/data.pt` (plus `torch_data/data.npz` for quick inspection)
-- **Training/visualization dataset**: `data/processed/sample_*.npz` + `data/processed/metadata.json`
-
-`python app.py --generate ...` calls `src.training.dataset.generate_dataset()`, which orchestrates:
-
-- `src.solver.generation` to create/update missing or stale simulations
-- `src.solver.to_torch` to pack them into tensors
-- `src.training.dataset.build_processed_from_torch_data` to build `data/processed`
-
-### Config-driven generation
-
-Generation settings live in `configs/default.json` under `solver_generation`.
-
-- **Stale detection**: if an existing simulation has `max_time < Tmax` or its `gen_hash` differs (grid/numerics/physics/boundary changed), it is re-generated.
-
-### Dataset sampling mode
-
-`configs/default.json` also has `dataset_generation`:
-
-- `sampling: "lhs"`: selects `n_samples` parameter combinations using Latin Hypercube sampling over the discrete grids defined in `solver_generation.params` (keeps filenames deterministic and avoids full Cartesian explosion).
-
-## Web Interface
-
-Side-by-side comparison of Neural Network vs Numerical Solver:
-
-**Parameters:**
-- `c₀` — inlet proppant concentration
-- `Q` — flow rate [m²/s]
-- `g` — gravity [m/s²]
-- `μ₀` — fluid viscosity [mPa·s]
-- `r` — particle radius [μm]
-- `Injection Duration` — proppant injection time [s]
-- `T` — total simulation time [s]
-
-**Outputs:**
-- NN vs NS visualization with animation
-- Computation time comparison
-- Relative L2 error over time
-- Speedup factor
-
-## FNO Model
-
-Fourier Neural Operator architecture:
-
-- **Input**: Parameters from `data/processed` + grid coordinates
-- **Output**: Full trajectory \(c(x,y,t)\) (stored/learned in normalized form \(c/c_{max}\in[0,1]\))
-- **Architecture**: 4 Fourier layers, width=48, modes=(12,8)
-- **Parameters**: ~10M trainable
-
-## Training
-
-**Loss Function**: Relative L2 Loss
-```
-Loss = ||pred - target||₂ / ||target||₂
-```
-
-This is better than MSE for PDEs because it's scale-invariant.
-
-**Features:**
-- Warmup + Cosine Annealing LR scheduler
-- Early stopping with configurable patience
-- Gradient clipping (max_norm=1.0)
-- AdamW optimizer with weight decay
-
-**Example:**
-```bash
-# Generate dataset with parallel workers
-python app.py --generate --samples 500 --workers -1
-
-# Train with early stopping
-python app.py --train --epochs 100 --lr 1e-3 --patience 15
-```
-
-**Training output:**
-```
-Epoch   1 | Train: 2.34e-01 | Val: 1.89e-01 | Quality: 81.1% | LR: 2.00e-04 | Time: 12.3s [BEST]
-Epoch   2 | Train: 1.56e-01 | Val: 1.45e-01 | Quality: 85.5% | LR: 4.00e-04 | Time: 11.8s [BEST]
-...
-```
-
-## Data Generation
-
-Data generation is configuration-driven via `configs/default.json` (`solver_generation` and `dataset_generation`).
+1. **Generate**: `simulation_timeseries/*_series.npz`
+2. **Convert**: `torch_data/data.pt`
+3. **Process**: `data/processed/sample_*.npz`
 
 ## Goal
 
-Replace numerical solver (~5s per simulation) with FNO for 100-1000x speedup while maintaining accuracy.
+Replace numerical solver (~5s per simulation) with FNO for 100-1000x speedup.

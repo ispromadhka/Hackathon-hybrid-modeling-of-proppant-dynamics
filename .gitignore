@@ -1,6 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyz
 *$py.class
 *.so
 .Python
@@ -12,11 +14,11 @@ dist/
 build/
 
 # Data (large files)
-data/processed/*.npz
+data/processed/
 data/raw/
 
 # Model checkpoints (large)
-checkpoints/*.pt
+checkpoints/
 
 # Jupyter
 .ipynb_checkpoints/
