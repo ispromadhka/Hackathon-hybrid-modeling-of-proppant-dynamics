@@ -77,7 +77,7 @@ def load_model():
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
-    # Detect model dimensions
+    # Detect model dimensions from checkpoint
     if 'grid_x' in state_dict:
         nx = state_dict['grid_x'].shape[2]
         ny = state_dict['grid_x'].shape[3]
@@ -92,18 +92,50 @@ def load_model():
     else:
         n_params = len(MODEL_META.get('param_names', []))
 
-    if 'project.5.weight' in state_dict:
-        n_times = state_dict['project.5.weight'].shape[0]
-    elif 'project.2.weight' in state_dict:
-        n_times = state_dict['project.2.weight'].shape[0]
-    else:
+    # Detect n_times from project layer (last conv layer output channels)
+    n_times = None
+    for key in ['project.6.weight', 'project.6.bias', 'project.5.weight', 'project.4.weight',
+                'project.2.weight', 'mass_scale']:
+        if key in state_dict:
+            shape = state_dict[key].shape
+            if 'mass_scale' in key:
+                n_times = shape[1]
+            elif 'bias' in key:
+                n_times = shape[0]
+            elif 'weight' in key and len(shape) == 4:
+                n_times = shape[0]
+            if n_times:
+                break
+
+    if n_times is None:
         n_times = MODEL_META.get('n_times', 201)
 
+    print(f"Creating model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
     MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=DEVICE)
-    MODEL.load_state_dict(state_dict, strict=False)
-    MODEL.eval()
 
-    print(f"Model loaded: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+    # Convert old complex weights to new real/imag format if needed
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if value.is_complex():
+            # Old format: complex weights -> split into real/imag
+            base_key = key.replace('.weight', '')
+            if 'weights1' in key or 'weights2' in key:
+                new_state_dict[key.replace('weights1', 'weights1_real').replace('weights2', 'weights2_real')] = value.real
+                new_state_dict[key.replace('weights1', 'weights1_imag').replace('weights2', 'weights2_imag')] = value.imag
+            else:
+                new_state_dict[key] = value
+        else:
+            new_state_dict[key] = value
+
+    # Load with strict=False to handle architecture differences
+    missing, unexpected = MODEL.load_state_dict(new_state_dict, strict=False)
+    if missing:
+        print(f"Missing keys (will use random init): {len(missing)}")
+    if unexpected:
+        print(f"Unexpected keys (ignored): {len(unexpected)}")
+
+    MODEL.eval()
+    print(f"Model loaded successfully")
     return True
 
 
