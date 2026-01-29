@@ -50,7 +50,9 @@ class SpectralConv2d(nn.Module):
             self.hf_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
     def compl_mul2d(self, input: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        return torch.einsum("bixy,ioxy->boxy", input, weights)
+        # Disable autocast for complex einsum (not supported in half precision)
+        with torch.cuda.amp.autocast(enabled=False):
+            return torch.einsum("bixy,ioxy->boxy", input, weights)
 
     def get_frequency_scaling(self, size1: int, rfft_size2: int, orig_size2: int, device: torch.device) -> torch.Tensor:
         """Generate frequency-dependent scaling to amplify high frequencies."""
@@ -71,31 +73,32 @@ class SpectralConv2d(nn.Module):
         size1, size2 = x.shape[-2], x.shape[-1]
         orig_dtype = x.dtype
 
-        # cuFFT doesn't support half precision for non-power-of-two sizes
-        # Always compute FFT in float32
-        x_float = x.float()
-        x_ft = torch.fft.rfft2(x_float)
+        # Disable autocast for all FFT operations (complex ops not supported in half)
+        with torch.cuda.amp.autocast(enabled=False):
+            # cuFFT doesn't support half precision for non-power-of-two sizes
+            x_float = x.float()
+            x_ft = torch.fft.rfft2(x_float)
 
-        out_ft = torch.zeros(
-            batchsize, self.out_channels, size1, size2 // 2 + 1,
-            dtype=torch.cfloat, device=x.device
-        )
+            out_ft = torch.zeros(
+                batchsize, self.out_channels, size1, size2 // 2 + 1,
+                dtype=torch.cfloat, device=x.device
+            )
 
-        # Low frequency modes (corners in 2D FFT)
-        m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
-        out_ft[:, :, :m1, :m2] = self.compl_mul2d(
-            x_ft[:, :, :m1, :m2], self.weights1[:, :, :m1, :m2]
-        )
-        out_ft[:, :, -m1:, :m2] = self.compl_mul2d(
-            x_ft[:, :, -m1:, :m2], self.weights2[:, :, :m1, :m2]
-        )
+            # Low frequency modes (corners in 2D FFT)
+            m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
+            out_ft[:, :, :m1, :m2] = self.compl_mul2d(
+                x_ft[:, :, :m1, :m2], self.weights1[:, :, :m1, :m2]
+            )
+            out_ft[:, :, -m1:, :m2] = self.compl_mul2d(
+                x_ft[:, :, -m1:, :m2], self.weights2[:, :, :m1, :m2]
+            )
 
-        # Apply High-Frequency Scaling
-        if self.use_hfs:
-            hf_scaling = self.get_frequency_scaling(size1, size2 // 2 + 1, size2, x.device)
-            out_ft = out_ft * hf_scaling
+            # Apply High-Frequency Scaling
+            if self.use_hfs:
+                hf_scaling = self.get_frequency_scaling(size1, size2 // 2 + 1, size2, x.device)
+                out_ft = out_ft * hf_scaling
 
-        x = torch.fft.irfft2(out_ft, s=(size1, size2))
+            x = torch.fft.irfft2(out_ft, s=(size1, size2))
 
         # Apply learnable high-frequency boost
         if self.use_hfs:
@@ -139,39 +142,41 @@ class SpectralAttention(nn.Module):
         batch, channels, size1, size2 = x.shape
         orig_dtype = x.dtype
 
-        # cuFFT doesn't support half precision for non-power-of-two sizes
-        x_float = x.float()
-        x_ft = torch.fft.rfft2(x_float)
+        # Disable autocast for all FFT operations
+        with torch.cuda.amp.autocast(enabled=False):
+            x_float = x.float()
+            x_ft = torch.fft.rfft2(x_float)
 
-        m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
+            m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
 
-        # Create frequency distance grid
-        freq1 = torch.arange(m1, device=x.device).float() / m1
-        freq2 = torch.arange(m2, device=x.device).float() / m2
-        freq_dist = torch.sqrt(freq1[:, None]**2 + freq2[None, :]**2)
-        freq_dist = freq_dist / (freq_dist.max() + 1e-8)
+            # Create frequency distance grid
+            freq1 = torch.arange(m1, device=x.device).float() / m1
+            freq2 = torch.arange(m2, device=x.device).float() / m2
+            freq_dist = torch.sqrt(freq1[:, None]**2 + freq2[None, :]**2)
+            freq_dist = freq_dist / (freq_dist.max() + 1e-8)
 
-        # Apply multi-band weighting
-        combined_mask = torch.zeros(1, channels, m1, m2, device=x.device)
-        boundaries = torch.sigmoid(self.band_boundaries)  # Ensure [0, 1]
-        boundaries = torch.cat([torch.zeros(1, device=x.device), boundaries, torch.ones(1, device=x.device)])
+            # Apply multi-band weighting
+            combined_mask = torch.zeros(1, channels, m1, m2, device=x.device)
+            boundaries = torch.sigmoid(self.band_boundaries)  # Ensure [0, 1]
+            boundaries = torch.cat([torch.zeros(1, device=x.device), boundaries, torch.ones(1, device=x.device)])
 
-        for i, weight in enumerate(self.freq_weights):
-            low, high = boundaries[i], boundaries[i + 1]
-            band_mask = ((freq_dist >= low) & (freq_dist < high)).float()
+            for i, weight in enumerate(self.freq_weights):
+                low, high = boundaries[i], boundaries[i + 1]
+                band_mask = ((freq_dist >= low) & (freq_dist < high)).float()
 
-            # Apply higher boost to higher frequency bands
-            boost = 1.0 + self.hf_boost * (i / (self.n_bands - 1))
-            combined_mask = combined_mask + F.softplus(weight[:, :, :m1, :m2]) * band_mask * boost
+                # Apply higher boost to higher frequency bands
+                boost = 1.0 + self.hf_boost * (i / (self.n_bands - 1))
+                combined_mask = combined_mask + F.softplus(weight[:, :, :m1, :m2]) * band_mask * boost
 
-        # Create output tensor (no in-place ops for autograd)
-        out_ft = torch.zeros_like(x_ft)
-        out_ft[:, :, :m1, :m2] = x_ft[:, :, :m1, :m2] * combined_mask
-        # Copy remaining frequencies with slight attenuation
-        out_ft[:, :, m1:, :] = x_ft[:, :, m1:, :] * 0.1
-        out_ft[:, :, :m1, m2:] = x_ft[:, :, :m1, m2:] * 0.1
+            # Create output tensor (no in-place ops for autograd)
+            out_ft = torch.zeros_like(x_ft)
+            out_ft[:, :, :m1, :m2] = x_ft[:, :, :m1, :m2] * combined_mask
+            # Copy remaining frequencies with slight attenuation
+            out_ft[:, :, m1:, :] = x_ft[:, :, m1:, :] * 0.1
+            out_ft[:, :, :m1, m2:] = x_ft[:, :, :m1, m2:] * 0.1
 
-        result = torch.fft.irfft2(out_ft, s=(size1, size2))
+            result = torch.fft.irfft2(out_ft, s=(size1, size2))
+
         return result.to(orig_dtype)
 
 
