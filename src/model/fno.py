@@ -50,9 +50,35 @@ class SpectralConv2d(nn.Module):
             self.hf_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
     def compl_mul2d(self, input: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        # Disable autocast for complex einsum (not supported in half precision)
-        with torch.cuda.amp.autocast(enabled=False):
-            return torch.einsum("bixy,ioxy->boxy", input, weights)
+        """
+        Complex multiplication via real operations.
+
+        Complex einsum doesn't work with AMP, so we decompose:
+        (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+
+        Args:
+            input: (batch, in_ch, x, y) complex64
+            weights: (in_ch, out_ch, x, y) complex64
+
+        Returns:
+            output: (batch, out_ch, x, y) complex64
+        """
+        # Extract real and imaginary parts
+        in_real = input.real
+        in_imag = input.imag
+        w_real = weights.real
+        w_imag = weights.imag
+
+        # Complex multiplication decomposed into real operations
+        # Real part: ac - bd
+        out_real = torch.einsum("bixy,ioxy->boxy", in_real, w_real) - \
+                   torch.einsum("bixy,ioxy->boxy", in_imag, w_imag)
+
+        # Imaginary part: ad + bc
+        out_imag = torch.einsum("bixy,ioxy->boxy", in_real, w_imag) + \
+                   torch.einsum("bixy,ioxy->boxy", in_imag, w_real)
+
+        return torch.complex(out_real, out_imag)
 
     def get_frequency_scaling(self, size1: int, rfft_size2: int, orig_size2: int, device: torch.device) -> torch.Tensor:
         """Generate frequency-dependent scaling to amplify high frequencies."""
