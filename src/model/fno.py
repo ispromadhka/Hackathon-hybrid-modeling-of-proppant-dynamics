@@ -69,8 +69,12 @@ class SpectralConv2d(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batchsize = x.shape[0]
         size1, size2 = x.shape[-2], x.shape[-1]
+        orig_dtype = x.dtype
 
-        x_ft = torch.fft.rfft2(x)
+        # cuFFT doesn't support half precision for non-power-of-two sizes
+        # Always compute FFT in float32
+        x_float = x.float()
+        x_ft = torch.fft.rfft2(x_float)
 
         out_ft = torch.zeros(
             batchsize, self.out_channels, size1, size2 // 2 + 1,
@@ -97,7 +101,8 @@ class SpectralConv2d(nn.Module):
         if self.use_hfs:
             x = x * self.hf_scale
 
-        return x
+        # Convert back to original dtype (for AMP compatibility)
+        return x.to(orig_dtype)
 
 
 class SpectralAttention(nn.Module):
@@ -132,7 +137,11 @@ class SpectralAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch, channels, size1, size2 = x.shape
-        x_ft = torch.fft.rfft2(x)
+        orig_dtype = x.dtype
+
+        # cuFFT doesn't support half precision for non-power-of-two sizes
+        x_float = x.float()
+        x_ft = torch.fft.rfft2(x_float)
 
         m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
 
@@ -162,7 +171,8 @@ class SpectralAttention(nn.Module):
         out_ft[:, :, m1:, :] = x_ft[:, :, m1:, :] * 0.1
         out_ft[:, :, :m1, m2:] = x_ft[:, :, :m1, m2:] * 0.1
 
-        return torch.fft.irfft2(out_ft, s=(size1, size2))
+        result = torch.fft.irfft2(out_ft, s=(size1, size2))
+        return result.to(orig_dtype)
 
 
 class BoundaryMask(nn.Module):

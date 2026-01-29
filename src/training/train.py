@@ -103,9 +103,14 @@ class SpectralLoss(nn.Module):
         self.cutoff = cutoff
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # cuFFT doesn't support half precision for non-power-of-two sizes
+        # Always compute FFT in float32
+        pred_float = pred.float()
+        target_float = target.float()
+
         # FFT of prediction and target
-        pred_ft = torch.fft.rfft2(pred)
-        target_ft = torch.fft.rfft2(target)
+        pred_ft = torch.fft.rfft2(pred_float)
+        target_ft = torch.fft.rfft2(target_float)
 
         # Magnitude spectra
         pred_mag = torch.abs(pred_ft)
@@ -114,7 +119,7 @@ class SpectralLoss(nn.Module):
         # Create frequency mask
         size1, size2 = pred_ft.shape[-2], pred_ft.shape[-1]
         freq1 = torch.fft.fftfreq(size1, device=pred.device)
-        freq2 = torch.fft.rfftfreq(pred.shape[-1], device=pred.device)
+        freq2 = torch.fft.rfftfreq(pred_float.shape[-1], device=pred.device)
         freq_dist = torch.sqrt(freq1[:, None]**2 + freq2[None, :]**2)
         freq_dist = freq_dist / (freq_dist.max() + 1e-8)
 
@@ -291,8 +296,9 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict:
         mass_error = torch.mean(torch.abs(pred_mass - target_mass) / (target_mass.abs() + 1e-6)).item() * 100
 
         # Spectral error (high-frequency component)
-        pred_ft = torch.fft.rfft2(pred)
-        target_ft = torch.fft.rfft2(target)
+        # Use float32 for FFT (cuFFT doesn't support half precision for non-power-of-two)
+        pred_ft = torch.fft.rfft2(pred.float())
+        target_ft = torch.fft.rfft2(target.float())
         spectral_error = torch.mean(torch.abs(torch.abs(pred_ft) - torch.abs(target_ft))).item()
 
         # Temporal smoothness (how well dynamics are captured)
