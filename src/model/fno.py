@@ -98,8 +98,8 @@ class SpectralConv2d(nn.Module):
         size1, size2 = x.shape[-2], x.shape[-1]
         orig_dtype = x.dtype
 
-        # Disable autocast for FFT operations
-        with torch.cuda.amp.autocast(enabled=False):
+        # Disable autocast for FFT operations (use device-agnostic syntax)
+        with torch.amp.autocast(device_type='cuda', enabled=False):
             x_float = x.float()
             x_ft = torch.fft.rfft2(x_float)
 
@@ -169,8 +169,8 @@ class SpectralAttention(nn.Module):
         batch, channels, size1, size2 = x.shape
         orig_dtype = x.dtype
 
-        # Disable autocast for all FFT operations
-        with torch.cuda.amp.autocast(enabled=False):
+        # Disable autocast for all FFT operations (use device-agnostic syntax)
+        with torch.amp.autocast(device_type='cuda', enabled=False):
             x_float = x.float()
             x_ft = torch.fft.rfft2(x_float)
 
