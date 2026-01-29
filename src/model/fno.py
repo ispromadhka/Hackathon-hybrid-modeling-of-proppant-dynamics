@@ -23,6 +23,8 @@ class SpectralConv2d(nn.Module):
     Includes High-Frequency Scaling (HFS) to mitigate spectral bias:
     - Higher frequencies get amplified scaling during forward pass
     - Helps model learn fine-grained features
+
+    Note: Weights stored as separate real/imag tensors for AMP compatibility.
     """
 
     def __init__(self, in_channels: int, out_channels: int, modes1: int, modes2: int,
@@ -35,41 +37,38 @@ class SpectralConv2d(nn.Module):
         self.use_hfs = use_hfs
         self.hfs_alpha = hfs_alpha
 
-        # Xavier-like initialization for complex weights
+        # Xavier-like initialization
         scale = 1 / math.sqrt(in_channels * out_channels)
 
-        self.weights1 = nn.Parameter(
-            scale * torch.randn(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
-        )
-        self.weights2 = nn.Parameter(
-            scale * torch.randn(in_channels, out_channels, modes1, modes2, dtype=torch.cfloat)
-        )
+        # Store real and imaginary parts separately (AMP converts complex to float16)
+        self.weights1_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        self.weights1_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        self.weights2_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        self.weights2_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
 
         # High-frequency scaling weights (learnable)
         if use_hfs:
             self.hf_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
-    def compl_mul2d(self, input: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    def compl_mul2d(self, input: torch.Tensor, w_real: torch.Tensor, w_imag: torch.Tensor) -> torch.Tensor:
         """
         Complex multiplication via real operations.
 
-        Complex einsum doesn't work with AMP, so we decompose:
         (a + bi)(c + di) = (ac - bd) + (ad + bc)i
 
         Args:
             input: (batch, in_ch, x, y) complex64
-            weights: (in_ch, out_ch, x, y) complex64
+            w_real: (in_ch, out_ch, x, y) real weights
+            w_imag: (in_ch, out_ch, x, y) imag weights
 
         Returns:
             output: (batch, out_ch, x, y) complex64
         """
-        # Extract real and imaginary parts
-        in_real = input.real
-        in_imag = input.imag
-        w_real = weights.real
-        w_imag = weights.imag
+        in_real = input.real.float()
+        in_imag = input.imag.float()
+        w_real = w_real.float()
+        w_imag = w_imag.float()
 
-        # Complex multiplication decomposed into real operations
         # Real part: ac - bd
         out_real = torch.einsum("bixy,ioxy->boxy", in_real, w_real) - \
                    torch.einsum("bixy,ioxy->boxy", in_imag, w_imag)
@@ -99,9 +98,8 @@ class SpectralConv2d(nn.Module):
         size1, size2 = x.shape[-2], x.shape[-1]
         orig_dtype = x.dtype
 
-        # Disable autocast for all FFT operations (complex ops not supported in half)
+        # Disable autocast for FFT operations
         with torch.cuda.amp.autocast(enabled=False):
-            # cuFFT doesn't support half precision for non-power-of-two sizes
             x_float = x.float()
             x_ft = torch.fft.rfft2(x_float)
 
@@ -113,10 +111,14 @@ class SpectralConv2d(nn.Module):
             # Low frequency modes (corners in 2D FFT)
             m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
             out_ft[:, :, :m1, :m2] = self.compl_mul2d(
-                x_ft[:, :, :m1, :m2], self.weights1[:, :, :m1, :m2]
+                x_ft[:, :, :m1, :m2],
+                self.weights1_real[:, :, :m1, :m2],
+                self.weights1_imag[:, :, :m1, :m2]
             )
             out_ft[:, :, -m1:, :m2] = self.compl_mul2d(
-                x_ft[:, :, -m1:, :m2], self.weights2[:, :, :m1, :m2]
+                x_ft[:, :, -m1:, :m2],
+                self.weights2_real[:, :, :m1, :m2],
+                self.weights2_imag[:, :, :m1, :m2]
             )
 
             # Apply High-Frequency Scaling
@@ -130,7 +132,6 @@ class SpectralConv2d(nn.Module):
         if self.use_hfs:
             x = x * self.hf_scale
 
-        # Convert back to original dtype (for AMP compatibility)
         return x.to(orig_dtype)
 
 
