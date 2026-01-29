@@ -209,6 +209,13 @@ main {
     border: 1px solid var(--error-color);
 }
 
+.status-message.warning {
+    display: block;
+    background-color: rgba(241, 196, 15, 0.15);
+    color: #f39c12;
+    border: 1px solid #f39c12;
+}
+
 /* Metrics panel */
 .metrics-panel {
     margin-top: auto;

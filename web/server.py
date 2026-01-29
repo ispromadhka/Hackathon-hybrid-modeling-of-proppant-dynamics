@@ -27,9 +27,11 @@ CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
 CONFIG_PATH = ROOT / 'configs' / 'default.json'
 DATA_META_PATH = ROOT / 'data' / 'processed' / 'metadata.json'
 
-# Global model
+# Global model state
 MODEL = None
 MODEL_META = None
+MODEL_VALID = False  # Whether model weights loaded correctly
+MODEL_WARNING = None  # Warning message if model partially loaded
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 app = FastAPI(title="Proppant Transport Simulator")
@@ -48,11 +50,15 @@ class SimulationParams(BaseModel):
 
 
 def load_model():
-    """Load the trained model."""
-    global MODEL, MODEL_META
+    """Load the trained model with compatibility checking."""
+    global MODEL, MODEL_META, MODEL_VALID, MODEL_WARNING
+
+    MODEL_VALID = False
+    MODEL_WARNING = None
 
     if not CHECKPOINT_PATH.exists():
-        print(f"Warning: No checkpoint found at {CHECKPOINT_PATH}")
+        MODEL_WARNING = f"No checkpoint found at {CHECKPOINT_PATH}"
+        print(f"Warning: {MODEL_WARNING}")
         return False
 
     # Load metadata
@@ -74,8 +80,13 @@ def load_model():
             'dT': 2.0
         }
 
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-    state_dict = checkpoint.get('model_state_dict', checkpoint)
+    try:
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+    except Exception as e:
+        MODEL_WARNING = f"Failed to load checkpoint: {e}"
+        print(f"Warning: {MODEL_WARNING}")
+        return False
 
     # Detect model dimensions from checkpoint
     if 'grid_x' in state_dict:
@@ -129,14 +140,28 @@ def load_model():
 
     # Load with strict=False to handle architecture differences
     missing, unexpected = MODEL.load_state_dict(new_state_dict, strict=False)
-    if missing:
-        print(f"Missing keys (will use random init): {len(missing)}")
+
+    # Check compatibility - if too many keys are missing, model is incompatible
+    total_params = len(list(MODEL.state_dict().keys()))
+    missing_ratio = len(missing) / total_params if total_params > 0 else 1.0
+
+    if missing_ratio > 0.3:  # More than 30% missing = incompatible
+        MODEL_WARNING = f"Architecture mismatch: {len(missing)}/{total_params} weights missing ({missing_ratio*100:.0f}%). Model predictions will be unreliable."
+        print(f"WARNING: {MODEL_WARNING}")
+        MODEL_VALID = False
+    elif missing:
+        MODEL_WARNING = f"Partial load: {len(missing)} weights missing. Some features may not work correctly."
+        print(f"Warning: {MODEL_WARNING}")
+        MODEL_VALID = True  # Still usable but with warning
+    else:
+        MODEL_VALID = True
+        print(f"Model loaded successfully - all weights matched")
+
     if unexpected:
-        print(f"Unexpected keys (ignored): {len(unexpected)}")
+        print(f"Note: {len(unexpected)} unexpected keys in checkpoint (ignored)")
 
     MODEL.eval()
-    print(f"Model loaded successfully")
-    return True
+    return MODEL_VALID
 
 
 def normalize_params(raw: np.ndarray) -> np.ndarray:
@@ -195,8 +220,9 @@ async def simulate(params: SimulationParams):
     # ===== Neural Network Prediction =====
     nn_result = None
     nn_time = 0.0
+    nn_available = False
 
-    if MODEL is not None:
+    if MODEL is not None and MODEL_VALID:
         try:
             norm_params = normalize_params(raw_params)
             inp = torch.from_numpy(norm_params.reshape(1, -1)).to(DEVICE).float()
@@ -210,10 +236,12 @@ async def simulate(params: SimulationParams):
             pred = pred.transpose(0, 2, 1)
             # Denormalize from [0,1] to [0, cmax]
             nn_result = pred * cmax
+            nn_available = True
 
         except Exception as e:
             print(f"NN prediction error: {e}")
             nn_result = None
+            nn_available = False
 
     # ===== Numerical Solver =====
     ns_result = None
@@ -292,7 +320,9 @@ async def simulate(params: SimulationParams):
         "nn_time": nn_time,
         "ns_time": ns_time,
         "speedup": speedup,
-        "l2_error": l2_error
+        "l2_error": l2_error,
+        "nn_available": nn_available,
+        "model_warning": MODEL_WARNING,
     }
 
 
@@ -302,6 +332,8 @@ async def health():
     return {
         "status": "ok",
         "model_loaded": MODEL is not None,
+        "model_valid": MODEL_VALID,
+        "model_warning": MODEL_WARNING,
         "device": DEVICE
     }
 

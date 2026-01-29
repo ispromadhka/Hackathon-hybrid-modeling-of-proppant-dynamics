@@ -231,17 +231,32 @@ async function runSimulation() {
         currentFrame = 0;
         timeMax.textContent = `${data.times[totalFrames - 1].toFixed(1)} s`;
 
-        // Update metrics
-        metrics.nnTime.textContent = `${data.nn_time.toFixed(3)} s`;
+        // Update metrics based on NN availability
+        if (data.nn_available) {
+            metrics.nnTime.textContent = `${data.nn_time.toFixed(3)} s`;
+            metrics.speedup.textContent = `${data.speedup.toFixed(1)}x`;
+            metrics.l2Error.textContent = `${(data.l2_error * 100).toFixed(2)}%`;
+        } else {
+            metrics.nnTime.textContent = 'N/A';
+            metrics.speedup.textContent = 'N/A';
+            metrics.l2Error.textContent = 'N/A';
+        }
         metrics.nsTime.textContent = `${data.ns_time.toFixed(2)} s`;
-        metrics.speedup.textContent = `${data.speedup.toFixed(1)}x`;
-        metrics.l2Error.textContent = `${(data.l2_error * 100).toFixed(2)}%`;
 
         // Render first frame
         renderFrame(0);
 
-        statusMessage.textContent = 'Simulation completed successfully!';
-        statusMessage.className = 'status-message success';
+        // Show appropriate status message
+        if (data.model_warning) {
+            statusMessage.textContent = `⚠️ ${data.model_warning}`;
+            statusMessage.className = 'status-message warning';
+        } else if (data.nn_available) {
+            statusMessage.textContent = 'Simulation completed successfully!';
+            statusMessage.className = 'status-message success';
+        } else {
+            statusMessage.textContent = 'Simulation completed (NS only - NN model not available)';
+            statusMessage.className = 'status-message warning';
+        }
 
     } catch (error) {
         console.error('Simulation error:', error);
