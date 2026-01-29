@@ -37,6 +37,26 @@ def get_device_info():
         'cpu_count': os.cpu_count() or 1,
     }
 
+    # Debug: Check why CUDA might not be available
+    if not info['cuda_available']:
+        print("DEBUG: CUDA not available. Checking reasons...")
+        print(f"  torch.version.cuda: {torch.version.cuda}")
+        print(f"  torch.backends.cudnn.enabled: {torch.backends.cudnn.enabled if hasattr(torch.backends, 'cudnn') else 'N/A'}")
+        print(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+
+        # Try to get more info
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                gpus = result.stdout.strip().split('\n')
+                print(f"  nvidia-smi found {len(gpus)} GPUs: {gpus}")
+            else:
+                print(f"  nvidia-smi error: {result.stderr}")
+        except Exception as e:
+            print(f"  nvidia-smi check failed: {e}")
+
     if info['cuda_available']:
         info['cuda_devices'] = [torch.cuda.get_device_name(i) for i in range(info['cuda_count'])]
         info['cuda_memory'] = [torch.cuda.get_device_properties(i).total_memory // (1024**3)

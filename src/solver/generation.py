@@ -432,7 +432,10 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
                 continue
     else:
         # Parallel processing with optimized settings
-        ctx = mp.get_context('spawn')  # Use spawn for better isolation
+        # Use 'fork' on Linux (faster), 'spawn' on Windows/Mac
+        import sys
+        ctx_name = 'fork' if sys.platform.startswith('linux') else 'spawn'
+        ctx = mp.get_context(ctx_name)
         with ProcessPoolExecutor(
             max_workers=actual_workers,
             mp_context=ctx,
