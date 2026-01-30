@@ -1,5 +1,13 @@
 import os
 import sys
+
+# CRITICAL: Set BLAS threading BEFORE importing numpy to avoid deadlock with multiprocessing
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -18,6 +26,15 @@ if sys.platform == 'darwin':
         mp.set_start_method('fork', force=True)
     except RuntimeError:
         pass  # Already set
+
+
+def _worker_init():
+    """Initializer for worker processes - ensures BLAS threading is disabled."""
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 _solver_dir = Path(__file__).parent
 if str(_solver_dir) not in sys.path:
@@ -227,6 +244,14 @@ def _simulate_and_persist(params, gen_cfg: dict, project_root: str, gen_hash: st
     import os
     import sys
     pid = os.getpid()
+
+    # CRITICAL: Disable BLAS threading to avoid deadlock after fork
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
     # Immediate debug output to stderr (bypasses buffering)
     sys.stderr.write(f"[Worker {pid}] SPAWNED\n")
     sys.stderr.flush()
@@ -408,7 +433,7 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
         max_workers = int(n_workers)
         print(f"[INFO] Starting {total_new} simulations with {max_workers} workers...")
 
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init) as ex:
             futures = {}
             print(f"[INFO] Submitting jobs...", end=" ", flush=True)
             for i, params in enumerate(new_simulations):
@@ -522,7 +547,7 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
         max_workers = int(n_workers)
         print(f"[INFO] Starting {len(params_list)} simulations with {max_workers} workers...")
 
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init) as ex:
             # Submit jobs in batches to show progress
             futures = {}
             print(f"[INFO] Submitting jobs...", end=" ", flush=True)
