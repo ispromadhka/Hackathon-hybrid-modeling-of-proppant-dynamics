@@ -111,7 +111,7 @@ function getColorscale() {
 
 // Инициализация пустых графиков
 function initEmptyPlots() {
-    const layout = getPlotlyLayout([0, 60], [0, 60]);
+    const layout = getPlotlyLayout([0, 100], [0, 60]);  // L=100, H=60
     const config = {
         responsive: true,
         displayModeBar: true,
@@ -123,6 +123,7 @@ function initEmptyPlots() {
         z: [[0]],
         type: 'heatmap',
         colorscale: getColorscale(),
+        zsmooth: 'best',
         showscale: true,
         colorbar: {
             title: 'c',
@@ -158,6 +159,7 @@ function renderFrame(frameIdx) {
         colorscale: getColorscale(),
         zmin: 0,
         zmax: c_max,
+        zsmooth: 'best',  // Smooth interpolation instead of pixels
         showscale: true,
         colorbar: {
             title: 'c',
@@ -176,6 +178,7 @@ function renderFrame(frameIdx) {
         colorscale: getColorscale(),
         zmin: 0,
         zmax: c_max,
+        zsmooth: 'best',  // Smooth interpolation instead of pixels
         showscale: true,
         colorbar: {
             title: 'c',
