@@ -55,6 +55,9 @@ torch_data/
 src/solver/t.ipynb
 src/solver/t.py
 
+# Unused solver files (already deleted)
+src/solver/Case1/
+
 # Caches
 __pypackages__/
 .pytest_cache/
