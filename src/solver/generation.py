@@ -20,21 +20,13 @@ import json
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# Fix for macOS: use 'fork' instead of 'spawn' to avoid hanging
-if sys.platform == 'darwin':
+# Use 'spawn' on Linux to avoid BLAS deadlock after fork
+# 'spawn' creates fresh processes without inheriting corrupted thread pools
+if sys.platform != 'darwin':
     try:
-        mp.set_start_method('fork', force=True)
+        mp.set_start_method('spawn', force=True)
     except RuntimeError:
         pass  # Already set
-
-
-def _worker_init():
-    """Initializer for worker processes - ensures BLAS threading is disabled."""
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
-    os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
-    os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 _solver_dir = Path(__file__).parent
 if str(_solver_dir) not in sys.path:
