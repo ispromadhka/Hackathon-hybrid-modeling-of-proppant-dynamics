@@ -22,32 +22,32 @@
 
             <div class="param-group">
                 <label for="c_in">Inlet Concentration:</label>
-                <input type="number" id="c_in" value="0.3" step="0.01" min="0.1" max="0.5">
+                <input type="number" id="c_in" value="0.3" step="0.01" min="0.05" max="0.45">
             </div>
 
             <div class="param-group">
                 <label for="w0">Fracture Aperture (m):</label>
-                <input type="number" id="w0" value="0.005" step="0.001" min="0.001" max="0.01">
+                <input type="number" id="w0" value="0.015" step="0.005" min="0.01" max="0.03">
             </div>
 
             <div class="param-group">
                 <label for="mu0">Viscosity (Pa-s):</label>
-                <input type="number" id="mu0" value="0.001" step="0.0001" min="0.0001" max="0.01">
+                <input type="number" id="mu0" value="0.001" step="0.001" min="0.001" max="0.02">
             </div>
 
             <div class="param-group">
-                <label for="Q">Flow Rate (m2/s):</label>
-                <input type="number" id="Q" value="0.05" step="0.01" min="0.01" max="0.1">
+                <label for="Q">Flow Rate (m²/s):</label>
+                <input type="number" id="Q" value="0.05" step="0.01" min="0.01" max="0.2">
             </div>
 
             <div class="param-group">
-                <label for="chi">Chi:</label>
-                <input type="number" id="chi" value="5.0" step="0.5" min="1.0" max="10.0">
+                <label for="chi">Inlet Width (m):</label>
+                <input type="number" id="chi" value="20.0" step="1.0" min="15.0" max="30.0">
             </div>
 
             <div class="param-group">
                 <label for="c_in_times">Injection Time (s):</label>
-                <input type="number" id="c_in_times" value="50" step="10" min="10" max="200">
+                <input type="number" id="c_in_times" value="100" step="10" min="50" max="200">
             </div>
 
             <button class="run-btn" id="run-btn">

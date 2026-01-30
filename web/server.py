@@ -41,12 +41,12 @@ app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
 
 class SimulationParams(BaseModel):
-    c_in: float = 0.3
-    w0: float = 0.005
-    mu0: float = 0.001
-    Q: float = 0.05
-    chi: float = 5.0
-    c_in_times: float = 50.0
+    c_in: float = 0.3        # Training range: 0.05 - 0.45
+    w0: float = 0.015        # Training range: 0.01 - 0.03
+    mu0: float = 0.001       # Training range: 0.001 - 0.02
+    Q: float = 0.05          # Training range: 0.01 - 0.2 (becomes negative internally)
+    chi: float = 20.0        # Training range: 15 - 30 (inlet width in meters)
+    c_in_times: float = 100.0  # Training range: 50 - 200
 
 
 def load_model():
@@ -191,7 +191,9 @@ async def simulate(params: SimulationParams):
     nx = MODEL_META.get('nx', 100) if MODEL_META else 100
     ny = MODEL_META.get('ny', 100) if MODEL_META else 100
 
+    # Note: Negative Q for solver convention (inflow)
     Q_internal = -abs(params.Q)
+    print(f"[DEBUG] Input params: c_in={params.c_in}, w0={params.w0}, mu0={params.mu0}, Q={params.Q}, chi={params.chi}")
 
     raw_params = np.array([
         params.c_in,
@@ -236,6 +238,10 @@ async def simulate(params: SimulationParams):
         c_in_times_arr = np.array([params.c_in_times])
         c_in_arr = np.array([params.c_in, 0.0])
 
+        # Convert chi (inlet width in meters) to inlet_fraction
+        inlet_fraction = min(params.chi / Ly, 1.0)
+        print(f"[DEBUG] chi={params.chi}, Ly={Ly}, inlet_fraction={inlet_fraction:.4f}")
+
         solver = ProppantSolver(
             nx=nx, ny=ny,
             Lx=Lx, Ly=Ly,
@@ -245,7 +251,8 @@ async def simulate(params: SimulationParams):
             g=9.81,
             mu0=params.mu0,
             r_particle=0.0002,
-            inlet_fraction=0.5,
+            w0=params.w0,
+            inlet_fraction=inlet_fraction,
             c_in_times=c_in_times_arr,
             c_in_arr=c_in_arr,
             rk_stages=3,
@@ -255,6 +262,12 @@ async def simulate(params: SimulationParams):
         t0 = time.perf_counter()
         times, concentrations = solver.solve()
         ns_time = time.perf_counter() - t0
+
+        # Debug: log concentration statistics
+        print(f"[DEBUG] Solver output shape: {concentrations.shape}")
+        print(f"[DEBUG] Concentration range: [{concentrations.min():.6f}, {concentrations.max():.6f}]")
+        print(f"[DEBUG] Non-zero elements: {np.count_nonzero(concentrations)} / {concentrations.size}")
+        print(f"[DEBUG] Times: {len(times)} steps, range [{times[0]:.1f}, {times[-1]:.1f}]")
 
         ns_result = np.clip(concentrations, 0, cmax)
 
@@ -283,11 +296,37 @@ async def simulate(params: SimulationParams):
 
     speedup = ns_time / (nn_time + 1e-8) if nn_time > 0 else 0.0
 
-    x_grid = np.linspace(0, Lx, nx).tolist()
-    y_grid = np.linspace(0, Ly, ny).tolist()
+    # Grid coordinates matching solver cell centers
+    dx = Lx / nx
+    dy = Ly / ny
+    x_grid = (np.linspace(0, Lx, nx, endpoint=False) + dx/2).tolist()
+    y_grid = (np.linspace(0, Ly, ny, endpoint=False) + dy/2).tolist()
+
+    print(f"[DEBUG] Grid: nx={nx}, ny={ny}, Lx={Lx}, Ly={Ly}")
+    print(f"[DEBUG] x_grid: len={len(x_grid)}, range=[{x_grid[0]:.2f}, {x_grid[-1]:.2f}]")
+    print(f"[DEBUG] y_grid: len={len(y_grid)}, range=[{y_grid[0]:.2f}, {y_grid[-1]:.2f}]")
+    print(f"[DEBUG] NS result shape: {ns_result.shape} (expected: n_times={len(times)}, ny={ny}, nx={nx})")
+
+    # Verify shapes match for Plotly
+    if ns_result.shape[1] != len(y_grid) or ns_result.shape[2] != len(x_grid):
+        print(f"[ERROR] Shape mismatch! ns_result[1]={ns_result.shape[1]} vs y_grid={len(y_grid)}, ns_result[2]={ns_result.shape[2]} vs x_grid={len(x_grid)}")
 
     if nn_result is None:
         nn_result = np.zeros_like(ns_result)
+
+    # Final debug output
+    print(f"[DEBUG] Final NS result: shape={ns_result.shape}, range=[{ns_result.min():.6f}, {ns_result.max():.6f}]")
+    print(f"[DEBUG] Final NN result: shape={nn_result.shape}, range=[{nn_result.min():.6f}, {nn_result.max():.6f}]")
+
+    # Check specific frames
+    print(f"[DEBUG] Frame 0 (t={times[0]:.1f}s): NS max={ns_result[0].max():.6f}")
+    mid_frame = len(times) // 2
+    print(f"[DEBUG] Frame {mid_frame} (t={times[mid_frame]:.1f}s): NS max={ns_result[mid_frame].max():.6f}")
+    print(f"[DEBUG] Frame -1 (t={times[-1]:.1f}s): NS max={ns_result[-1].max():.6f}")
+
+    # Use actual max concentration for colorscale (at least c_in, but could be higher)
+    actual_max = max(float(ns_result.max()), float(params.c_in))
+    print(f"[DEBUG] Using c_max={actual_max:.4f} for colorscale (ns_max={ns_result.max():.4f}, c_in={params.c_in})")
 
     return {
         "nn": nn_result.tolist(),
@@ -295,7 +334,7 @@ async def simulate(params: SimulationParams):
         "times": times.tolist(),
         "x_grid": x_grid,
         "y_grid": y_grid,
-        "c_max": float(params.c_in),
+        "c_max": actual_max,
         "nn_time": nn_time,
         "ns_time": ns_time,
         "speedup": speedup,
