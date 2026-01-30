@@ -1,11 +1,11 @@
 """
 SuperB-FNO: Multi-scale Fourier Neural Operator for proppant transport.
 
-Architecture improvements over vanilla FNO:
-- Multi-scale spectral convolutions (different modes at each level)
-- U-Net style encoder-decoder with skip connections
-- Residual learning for better gradient flow
-- Spectral attention for adaptive frequency weighting
+Улучшенная архитектура с антишумовыми механизмами:
+- Низкочастотная фильтрация (подавление высокочастотного шума)
+- Гауссово сглаживание выходных данных
+- Спектральное сглаживание для плавных переходов
+- Temporal smoothing для временной согласованности
 """
 
 import torch
@@ -15,7 +15,7 @@ import math
 
 
 class SpectralConv2d(nn.Module):
-    """2D Fourier layer with learnable spectral weights."""
+    """2D Fourier layer with learnable spectral weights and noise suppression."""
 
     def __init__(self, in_channels: int, out_channels: int, modes1: int, modes2: int):
         super().__init__()
@@ -48,7 +48,7 @@ class SpectralConv2d(nn.Module):
             dtype=torch.cfloat, device=x.device
         )
 
-        # Low frequency modes (corners in 2D FFT)
+        # Low frequency modes only (natural noise suppression)
         m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
         out_ft[:, :, :m1, :m2] = self.compl_mul2d(
             x_ft[:, :, :m1, :m2], self.weights1[:, :, :m1, :m2]
@@ -61,36 +61,55 @@ class SpectralConv2d(nn.Module):
         return x
 
 
-class SpectralAttention(nn.Module):
-    """Learnable attention over frequency components."""
+class LowPassFilter(nn.Module):
+    """Низкочастотный фильтр для подавления шума."""
 
-    def __init__(self, channels: int, modes1: int, modes2: int):
+    def __init__(self, cutoff_ratio: float = 0.3):
         super().__init__()
-        self.modes1 = modes1
-        self.modes2 = modes2
-        # Learnable frequency mask
-        self.freq_weight = nn.Parameter(torch.ones(1, channels, modes1, modes2))
+        self.cutoff_ratio = cutoff_ratio
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, channels, size1, size2 = x.shape
+        size1, size2 = x.shape[-2], x.shape[-1]
         x_ft = torch.fft.rfft2(x)
 
-        # Apply learnable frequency weighting (no in-place ops for autograd)
-        m1, m2 = min(self.modes1, size1 // 2), min(self.modes2, size2 // 2 + 1)
-        mask = F.softplus(self.freq_weight[:, :, :m1, :m2])
+        # Create low-pass mask
+        freq1 = torch.fft.fftfreq(size1, device=x.device)
+        freq2 = torch.fft.rfftfreq(size2, device=x.device)
+        freq1_grid, freq2_grid = torch.meshgrid(freq1, freq2, indexing='ij')
 
-        # Create output tensor and fill non-in-place
-        out_ft = torch.zeros_like(x_ft)
-        out_ft[:, :, :m1, :m2] = x_ft[:, :, :m1, :m2] * mask
-        # Copy remaining frequencies unchanged
-        out_ft[:, :, m1:, :] = x_ft[:, :, m1:, :]
-        out_ft[:, :, :m1, m2:] = x_ft[:, :, :m1, m2:]
+        # Smooth cutoff using Gaussian
+        radius = torch.sqrt(freq1_grid**2 + freq2_grid**2)
+        mask = torch.exp(-0.5 * (radius / self.cutoff_ratio) ** 4)
 
-        return torch.fft.irfft2(out_ft, s=(size1, size2))
+        x_ft = x_ft * mask.unsqueeze(0).unsqueeze(0)
+        return torch.fft.irfft2(x_ft, s=(size1, size2))
+
+
+class GaussianSmooth(nn.Module):
+    """Гауссово сглаживание для подавления шума."""
+
+    def __init__(self, channels: int, kernel_size: int = 3, sigma: float = 1.0):
+        super().__init__()
+        self.channels = channels
+        self.kernel_size = kernel_size
+
+        # Create Gaussian kernel
+        coords = torch.arange(kernel_size).float() - kernel_size // 2
+        g = torch.exp(-coords**2 / (2 * sigma**2))
+        kernel_1d = g / g.sum()
+        kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
+        kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
+        kernel_2d = kernel_2d.expand(channels, 1, -1, -1)
+
+        self.register_buffer('kernel', kernel_2d)
+        self.padding = kernel_size // 2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.conv2d(x, self.kernel, padding=self.padding, groups=self.channels)
 
 
 class FNOBlock(nn.Module):
-    """FNO block with spectral conv + local conv + residual."""
+    """FNO block with spectral conv + local conv + residual + smoothing."""
 
     def __init__(self, width: int, modes1: int, modes2: int, dropout: float = 0.0):
         super().__init__()
@@ -107,43 +126,45 @@ class FNOBlock(nn.Module):
         x = self.norm(x)
         x = F.gelu(x)
         x = self.dropout(x)
-        return x + residual  # Residual connection
+        return x + residual
 
 
-class MultiScaleFNOBlock(nn.Module):
-    """Multi-scale FNO block with different frequency modes."""
+class TemporalSmooth(nn.Module):
+    """Сглаживание по временной оси для плавных переходов."""
 
-    def __init__(self, width: int, modes_list: list, dropout: float = 0.0):
+    def __init__(self, kernel_size: int = 5, sigma: float = 1.5):
         super().__init__()
-        self.branches = nn.ModuleList([
-            SpectralConv2d(width, width // len(modes_list), m1, m2)
-            for m1, m2 in modes_list
-        ])
-        self.local_conv = nn.Conv2d(width, width, 1)
-        self.norm = nn.GroupNorm(8, width)
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        coords = torch.arange(kernel_size).float() - kernel_size // 2
+        kernel = torch.exp(-coords**2 / (2 * sigma**2))
+        kernel = kernel / kernel.sum()
+        self.register_buffer('kernel', kernel)
+        self.padding = kernel_size // 2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        spectral_outs = [branch(x) for branch in self.branches]
-        x_spectral = torch.cat(spectral_outs, dim=1)
-        x_local = self.local_conv(x)
-        x = x_spectral + x_local
-        x = self.norm(x)
-        x = F.gelu(x)
-        x = self.dropout(x)
-        return x + residual
+        # x: (batch, n_times, nx, ny)
+        batch, n_times, nx, ny = x.shape
+
+        # Reshape for 1D convolution along time axis
+        x = x.permute(0, 2, 3, 1).reshape(-1, 1, n_times)  # (batch*nx*ny, 1, n_times)
+
+        # Apply temporal smoothing
+        kernel = self.kernel.view(1, 1, -1)
+        x = F.conv1d(x, kernel, padding=self.padding)
+
+        # Reshape back
+        x = x.reshape(batch, nx, ny, n_times).permute(0, 3, 1, 2)
+        return x
 
 
 class SuperBFNO(nn.Module):
     """
-    SuperB-FNO for proppant transport prediction.
+    SuperB-FNO с антишумовыми механизмами для предсказания транспорта пропанта.
 
-    Multi-scale architecture with:
-    - Encoder: progressively capture different frequency scales
-    - Bottleneck: high-capacity spectral processing
-    - Decoder: upsample with skip connections
-    - Parameter conditioning at multiple levels
+    Архитектура:
+    - Спектральные свёртки с ограничением по частоте
+    - Низкочастотная фильтрация
+    - Гауссово сглаживание
+    - Временное сглаживание для плавных переходов
     """
 
     def __init__(
@@ -154,7 +175,7 @@ class SuperBFNO(nn.Module):
         width: int = 64,
         n_layers: int = 4,
         n_params: int = 7,
-        dropout: float = 0.1,
+        dropout: float = 0.05,
     ):
         super().__init__()
         self.nx = nx
@@ -166,20 +187,21 @@ class SuperBFNO(nn.Module):
         # Input: params + coordinate grids
         in_channels = n_params + 2
 
-        # Encoder
+        # Encoder with smooth activation
         self.lift = nn.Sequential(
             nn.Conv2d(in_channels, width, 1),
             nn.GELU(),
+            nn.GroupNorm(8, width),
             nn.Conv2d(width, width, 1),
         )
 
-        # Multi-scale FNO layers with increasing receptive field
+        # FNO layers with decreasing mode counts (progressive frequency reduction)
         self.fno_layers = nn.ModuleList()
         modes_schedule = [
-            (24, 24),  # Fine details
-            (16, 16),  # Medium scale
-            (12, 12),  # Coarse features
-            (8, 8),    # Global patterns
+            (16, 16),  # Start with medium frequencies
+            (12, 12),  # Reduce
+            (10, 10),  # Further reduce
+            (8, 8),    # Low frequencies only (smoothest)
         ]
 
         for i in range(n_layers):
@@ -188,32 +210,30 @@ class SuperBFNO(nn.Module):
                 FNOBlock(width, m1, m2, dropout=dropout)
             )
 
-        # Spectral attention for adaptive frequency selection
-        self.spectral_attention = SpectralAttention(width, 16, 16)
+        # Low-pass filter for additional noise suppression
+        self.lowpass = LowPassFilter(cutoff_ratio=0.25)
 
-        # Parameter injection at bottleneck
+        # Parameter injection
         self.param_inject = nn.Sequential(
-            nn.Linear(n_params, width * 4),
+            nn.Linear(n_params, width * 2),
             nn.GELU(),
-            nn.Linear(width * 4, width),
+            nn.Linear(width * 2, width),
         )
 
-        # Time embedding for temporal awareness
-        self.time_embed = nn.Sequential(
-            nn.Linear(1, width),
-            nn.GELU(),
-            nn.Linear(width, width),
-        )
-
-        # Output projection with larger capacity
+        # Output projection with smooth normalization
         self.project = nn.Sequential(
             nn.Conv2d(width, width * 2, 1),
             nn.GELU(),
             nn.GroupNorm(8, width * 2),
-            nn.Conv2d(width * 2, width * 2, 1),
+            nn.Conv2d(width * 2, width, 1),
             nn.GELU(),
-            nn.Conv2d(width * 2, n_times, 1),
+            nn.GroupNorm(8, width),
+            nn.Conv2d(width, n_times, 1),
         )
+
+        # Post-processing smoothing
+        self.spatial_smooth = GaussianSmooth(n_times, kernel_size=3, sigma=0.8)
+        self.temporal_smooth = TemporalSmooth(kernel_size=5, sigma=1.2)
 
         # Coordinate grids
         x = torch.linspace(0, 1, nx)
@@ -245,22 +265,29 @@ class SuperBFNO(nn.Module):
         # Lift to hidden dimension
         x = self.lift(x)
 
-        # FNO processing with residual
+        # FNO processing
         for layer in self.fno_layers:
             x = layer(x)
 
-        # Spectral attention
-        x = self.spectral_attention(x)
+        # Apply low-pass filter
+        x = self.lowpass(x)
 
-        # Parameter conditioning at bottleneck
+        # Parameter conditioning
         param_embed = self.param_inject(params)
         x = x + param_embed.unsqueeze(-1).unsqueeze(-1)
 
         # Project to trajectory
         trajectory = self.project(x)
 
-        # Clamp output to valid range [0, 1]
-        trajectory = torch.clamp(trajectory, 0.0, 1.0)
+        # Spatial smoothing
+        trajectory = self.spatial_smooth(trajectory)
+
+        # Temporal smoothing for smooth time evolution
+        trajectory = self.temporal_smooth(trajectory)
+
+        # Smooth clamp using sigmoid-based soft clipping
+        # This avoids hard edges from torch.clamp
+        trajectory = torch.sigmoid(trajectory * 6 - 3)  # Maps roughly [-0.5, 1.5] to [0, 1]
 
         return trajectory
 
@@ -280,7 +307,7 @@ def create_model(
         width=64,
         n_layers=4,
         n_params=n_params,
-        dropout=0.1,
+        dropout=0.05,
     )
     return model.to(device)
 

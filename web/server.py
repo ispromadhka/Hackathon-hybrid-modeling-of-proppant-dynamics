@@ -248,9 +248,9 @@ async def simulate(params: SimulationParams):
             T=Tmax, dT=dT,
             c_inlet=params.c_in,
             Q_inlet=Q_internal,
-            g=9.81,
+            g=0.0,  # Гравитация = 0 (как в обучающих данных)
             mu0=params.mu0,
-            r_particle=0.0002,
+            r_particle=0.0,  # r=0 (как в обучающих данных)
             w0=params.w0,
             inlet_fraction=inlet_fraction,
             c_in_times=c_in_times_arr,

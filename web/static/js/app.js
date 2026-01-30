@@ -68,7 +68,7 @@ function toggleTheme() {
 themeToggle.addEventListener('click', toggleTheme);
 
 // Конфигурация Plotly
-function getPlotlyLayout(title) {
+function getPlotlyLayout(xRange, yRange) {
     const isDark = document.body.classList.contains('dark-theme');
     return {
         title: null,
@@ -77,15 +77,17 @@ function getPlotlyLayout(title) {
             title: 'x (м)',
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
-            zerolinecolor: isDark ? '#3d4450' : '#dce1e7'
+            zerolinecolor: isDark ? '#3d4450' : '#dce1e7',
+            range: xRange || [0, 60],
+            constrain: 'domain'
         },
         yaxis: {
             title: 'y (м)',
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
             zerolinecolor: isDark ? '#3d4450' : '#dce1e7',
-            scaleanchor: 'x',
-            scaleratio: 1.0
+            range: yRange || [0, 60],
+            constrain: 'domain'
         },
         paper_bgcolor: isDark ? '#242830' : '#ffffff',
         plot_bgcolor: isDark ? '#2d323c' : '#f8f9fa',
@@ -107,7 +109,7 @@ function getColorscale() {
 
 // Инициализация пустых графиков
 function initEmptyPlots() {
-    const layout = getPlotlyLayout();
+    const layout = getPlotlyLayout([0, 60], [0, 60]);
     const config = {
         responsive: true,
         displayModeBar: true,
@@ -137,7 +139,11 @@ function renderFrame(frameIdx) {
     if (!simulationData) return;
 
     const { nn, ns, x_grid, y_grid, times, c_max } = simulationData;
-    const layout = getPlotlyLayout();
+
+    // Вычисляем диапазоны осей из данных
+    const xRange = [0, Math.max(...x_grid) + (x_grid[1] - x_grid[0]) / 2];
+    const yRange = [0, Math.max(...y_grid) + (y_grid[1] - y_grid[0]) / 2];
+    const layout = getPlotlyLayout(xRange, yRange);
 
     const nnFrame = nn[frameIdx];
     const nsFrame = ns[frameIdx];
