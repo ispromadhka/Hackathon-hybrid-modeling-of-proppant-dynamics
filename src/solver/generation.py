@@ -224,48 +224,67 @@ def run_simulation(params, gen_cfg: dict):
 
 def _simulate_and_persist(params, gen_cfg: dict, project_root: str, gen_hash: str):
     """Run simulation and save results. Uses absolute paths (no os.chdir)."""
-    project_root = Path(project_root)
+    import os
+    import sys
+    pid = os.getpid()
+    # Immediate debug output to stderr (bypasses buffering)
+    sys.stderr.write(f"[Worker {pid}] SPAWNED\n")
+    sys.stderr.flush()
+    try:
+        # Debug: confirm worker started
+        print(f"[Worker {pid}] Starting simulation for params {params[0]:.3f}...", flush=True)
 
-    param_hash = get_param_hash(params)
-    s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
-    param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
+        project_root = Path(project_root)
 
-    # Use absolute paths
-    ts_path = save_time_series(time_series_data, time_stamps, param_str, project_root)
+        param_hash = get_param_hash(params)
+        print(f"[Worker {pid}] Running solver...", flush=True)
+        s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
+        print(f"[Worker {pid}] Solver done, {len(time_series_data)} frames", flush=True)
 
-    time_metrics = calculate_metrics(time_series_data, s.w)
-    time_stats = compute_time_averages(time_metrics) if time_metrics else {}
+        param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
 
-    final_frame = time_series_data[-1]
-    if np.max(s.w) > 0:
-        final_c = final_frame / s.w
-    else:
-        final_c = final_frame
-    final_metrics = {
-        'final_mean': np.mean(final_c),
-        'final_std': np.std(final_c),
-        'final_max': np.max(final_c),
-        'final_min': np.min(final_c),
-        'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
-    }
+        # Use absolute paths
+        ts_path = save_time_series(time_series_data, time_stamps, param_str, project_root)
 
-    # Use absolute path for matrix
-    matrix_path = project_root / 'simulation_data' / f"{param_str}_final.npy"
-    np.save(str(matrix_path), final_frame)
+        time_metrics = calculate_metrics(time_series_data, s.w)
+        time_stats = compute_time_averages(time_metrics) if time_metrics else {}
 
-    result = {
-        'c_in': params[0], 'w0': params[1], 'mu0': params[2],
-        'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
-        'dT': params[6], 'param_hash': param_hash,
-        'gen_hash': gen_hash,
-        'matrix_path': str(matrix_path), 'timeseries_path': ts_path,
-        'total_steps': len(time_series_data),
-        'frames_count': len(time_series_data),
-        'max_time': time_stamps[-1] if time_stamps else 0.0
-    }
-    result.update(time_stats)
-    result.update(final_metrics)
-    return result
+        final_frame = time_series_data[-1]
+        if np.max(s.w) > 0:
+            final_c = final_frame / s.w
+        else:
+            final_c = final_frame
+        final_metrics = {
+            'final_mean': np.mean(final_c),
+            'final_std': np.std(final_c),
+            'final_max': np.max(final_c),
+            'final_min': np.min(final_c),
+            'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
+        }
+
+        # Use absolute path for matrix
+        matrix_path = project_root / 'simulation_data' / f"{param_str}_final.npy"
+        np.save(str(matrix_path), final_frame)
+
+        result = {
+            'c_in': params[0], 'w0': params[1], 'mu0': params[2],
+            'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
+            'dT': params[6], 'param_hash': param_hash,
+            'gen_hash': gen_hash,
+            'matrix_path': str(matrix_path), 'timeseries_path': ts_path,
+            'total_steps': len(time_series_data),
+            'frames_count': len(time_series_data),
+            'max_time': time_stamps[-1] if time_stamps else 0.0
+        }
+        result.update(time_stats)
+        result.update(final_metrics)
+        print(f"[Worker {pid}] Done, saved to {matrix_path.name}", flush=True)
+        return result
+    except Exception as e:
+        import traceback
+        print(f"[Worker {pid}] ERROR: {e}", flush=True)
+        traceback.print_exc()
+        raise
 
 def save_time_series(time_series_data, time_stamps, param_str, project_root=None):
     """Save time series to NPZ file using absolute path."""
