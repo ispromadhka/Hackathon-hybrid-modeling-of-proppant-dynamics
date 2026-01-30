@@ -98,7 +98,7 @@ class Trainer:
         lr: float = 1e-3,
         n_epochs: int = 100,
         checkpoint_dir: Path = None,
-        patience: int = 15,
+        patience: int = 8,
         min_delta: float = 1e-4
     ):
         self.model = model.to(device)
@@ -283,7 +283,7 @@ class Trainer:
         print(f"Best accuracy: {self.best_accuracy:.1f}%")
 
 
-def main(epochs: int = 100, lr: float = 1e-3, patience: int = 15):
+def main(epochs: int = 100, lr: float = 1e-3, patience: int = 8):
     """Main training entry point."""
     data_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
     checkpoint_dir = Path(__file__).parent.parent.parent / 'checkpoints'

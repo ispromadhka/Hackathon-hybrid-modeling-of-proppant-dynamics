@@ -66,16 +66,17 @@ def load_model():
         with open(DATA_META_PATH) as f:
             MODEL_META = json.load(f)
     else:
+        # Defaults must match configs/default.json solver_generation.grid
         MODEL_META = {
-            'nx': 150,      # Больше ячеек по X для прямоугольника
+            'nx': 150,
             'ny': 100,
             'n_times': 201,
             'param_names': ['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times', 'dT'],
             'param_min': [0.05, 0.01, 0.001, -0.2, 15.0, 50.0, 2.0],
             'param_max': [0.45, 0.03, 0.02, -0.01, 30.0, 200.0, 2.0],
             'cmax': 0.635,
-            'L': 100.0,     # Ширина 100м
-            'H': 60.0,      # Высота 60м
+            'L': 100.0,
+            'H': 60.0,
             'Tmax': 400.0,
             'dT': 2.0
         }
