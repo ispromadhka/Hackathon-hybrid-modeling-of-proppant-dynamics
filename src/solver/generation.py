@@ -349,6 +349,7 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
         return 0
 
     new_results = []
+    errors = []
     if n_workers is None or int(n_workers) <= 1:
         for params in tqdm(new_simulations, desc="Generating simulations", total=total_new):
             try:
@@ -361,7 +362,10 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
                     df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
                 df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                 df_combined.to_csv(csv_path, index=False)
-            except Exception:
+            except Exception as e:
+                errors.append(str(e))
+                if len(errors) <= 3:
+                    print(f"\n[ERROR] Simulation failed: {e}")
                 continue
     else:
         max_workers = int(n_workers)
@@ -378,10 +382,16 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
                         df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
                     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                     df_combined.to_csv(csv_path, index=False)
-                except Exception:
+                except Exception as e:
+                    errors.append(str(e))
+                    if len(errors) <= 3:
+                        print(f"\n[ERROR] Simulation failed: {e}")
                     continue
 
-    return total_new
+    if errors:
+        print(f"\n[WARNING] {len(errors)}/{total_new} simulations failed")
+
+    return len(new_results)
 
 
 def generate_for_params(params_list: list[tuple], project_root: Path | None = None, config_path: Path | None = None, n_workers: int = 1) -> int:
@@ -428,6 +438,7 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
     if len(params_list) == 0:
         return 0
     new_results = []
+    errors = []
     if n_workers is None or int(n_workers) <= 1:
         for params in tqdm(params_list, desc="Generating simulations", total=len(params_list)):
             try:
@@ -440,7 +451,10 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
                     df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
                 df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                 df_combined.to_csv(csv_path, index=False)
-            except Exception:
+            except Exception as e:
+                errors.append(f"params={params[:3]}...: {e}")
+                if len(errors) <= 3:
+                    print(f"\n[ERROR] Simulation failed: {e}")
                 continue
     else:
         max_workers = int(n_workers)
@@ -457,8 +471,14 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
                         df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
                     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                     df_combined.to_csv(csv_path, index=False)
-                except Exception:
+                except Exception as e:
+                    errors.append(f"{e}")
+                    if len(errors) <= 3:
+                        print(f"\n[ERROR] Simulation failed: {e}")
                     continue
+
+    if errors:
+        print(f"\n[WARNING] {len(errors)} simulations failed. First error: {errors[0]}")
 
     return len(new_results)
 

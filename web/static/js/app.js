@@ -32,6 +32,8 @@ const metrics = {
     nnTime: document.getElementById('nn-time'),
     nsTime: document.getElementById('ns-time'),
     speedup: document.getElementById('speedup'),
+    mae: document.getElementById('mae'),
+    r2: document.getElementById('r2'),
     l2Error: document.getElementById('l2-error')
 };
 
@@ -236,16 +238,21 @@ async function runSimulation() {
         currentFrame = 0;
         timeMax.textContent = `${data.times[totalFrames - 1].toFixed(1)} с`;
 
+        metrics.nsTime.textContent = `${data.ns_time.toFixed(2)} с`;
+
         if (data.nn_available) {
             metrics.nnTime.textContent = `${data.nn_time.toFixed(3)} с`;
-            metrics.speedup.textContent = `${data.speedup.toFixed(1)}x`;
+            metrics.speedup.textContent = `${data.speedup.toFixed(0)}x`;
+            metrics.mae.textContent = `${data.mae.toFixed(4)}`;
+            metrics.r2.textContent = `${data.r2.toFixed(1)}%`;
             metrics.l2Error.textContent = `${(data.l2_error * 100).toFixed(2)}%`;
         } else {
             metrics.nnTime.textContent = 'Н/Д';
             metrics.speedup.textContent = 'Н/Д';
+            metrics.mae.textContent = 'Н/Д';
+            metrics.r2.textContent = 'Н/Д';
             metrics.l2Error.textContent = 'Н/Д';
         }
-        metrics.nsTime.textContent = `${data.ns_time.toFixed(2)} с`;
 
         renderFrame(0);
 

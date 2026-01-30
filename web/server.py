@@ -288,11 +288,29 @@ async def simulate(params: SimulationParams):
             nn_result = zoom(nn_result, zoom_factor, order=1)
             nn_result = np.clip(nn_result, 0, cmax)
 
-    # Compute L2 error
-    l2_error = 0.0
-    if nn_result is not None:
+    # Compute metrics
+    mae = 0.0       # Mean Absolute Error
+    mse = 0.0       # Mean Squared Error
+    r2 = 0.0        # R² (coefficient of determination)
+    l2_error = 0.0  # Relative L2 error
+
+    if nn_result is not None and nn_available:
         diff = nn_result - ns_result
-        l2_error = np.sqrt(np.mean(diff ** 2)) / (np.sqrt(np.mean(ns_result ** 2)) + 1e-8)
+
+        # MAE - средняя абсолютная ошибка
+        mae = np.mean(np.abs(diff))
+
+        # MSE - среднеквадратичная ошибка
+        mse = np.mean(diff ** 2)
+
+        # R² - коэффициент детерминации (насколько хорошо модель объясняет данные)
+        ss_res = np.sum(diff ** 2)
+        ss_tot = np.sum((ns_result - np.mean(ns_result)) ** 2) + 1e-8
+        r2 = 1 - (ss_res / ss_tot)
+        r2 = max(0, r2) * 100  # в процентах, не меньше 0
+
+        # Relative L2 error
+        l2_error = np.sqrt(mse) / (np.sqrt(np.mean(ns_result ** 2)) + 1e-8)
 
     speedup = ns_time / (nn_time + 1e-8) if nn_time > 0 else 0.0
 
@@ -338,6 +356,9 @@ async def simulate(params: SimulationParams):
         "nn_time": nn_time,
         "ns_time": ns_time,
         "speedup": speedup,
+        "mae": mae,
+        "mse": mse,
+        "r2": r2,
         "l2_error": l2_error,
         "nn_available": nn_available,
         "model_warning": MODEL_WARNING,

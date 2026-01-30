@@ -58,21 +58,31 @@
             <div class="status-message" id="status-message"></div>
 
             <div class="metrics-panel">
-                <h3>Метрики</h3>
+                <h3>Время</h3>
                 <div class="metric">
-                    <span class="metric-label">Время НС:</span>
+                    <span class="metric-label">НС:</span>
                     <span class="metric-value" id="nn-time">-</span>
                 </div>
                 <div class="metric">
-                    <span class="metric-label">Время ЧМ:</span>
+                    <span class="metric-label">ЧМ:</span>
                     <span class="metric-value" id="ns-time">-</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Ускорение:</span>
                     <span class="metric-value" id="speedup">-</span>
                 </div>
+
+                <h3>Качество НС</h3>
                 <div class="metric">
-                    <span class="metric-label">Ошибка L2:</span>
+                    <span class="metric-label">MAE:</span>
+                    <span class="metric-value" id="mae">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">R²:</span>
+                    <span class="metric-value" id="r2">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">L2 отн.:</span>
                     <span class="metric-value" id="l2-error">-</span>
                 </div>
             </div>
