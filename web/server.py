@@ -347,13 +347,20 @@ async def simulate(params: SimulationParams):
     actual_max = max(float(ns_result.max()), float(params.c_in))
     print(f"[DEBUG] Using c_max={actual_max:.4f} for colorscale (ns_max={ns_result.max():.4f}, c_in={params.c_in})")
 
+    # Subsample frames to reduce JSON response size (every 4th frame: 201 -> 51)
+    step = 4
+    ns_sub = np.round(ns_result[::step], 4)
+    nn_sub = np.round(nn_result[::step], 4)
+    times_sub = times[::step]
+    print(f"[DEBUG] Subsampled: {len(times)} -> {len(times_sub)} frames for web transfer")
+
     return {
-        "nn": nn_result.tolist(),
-        "ns": ns_result.tolist(),
-        "times": times.tolist(),
-        "x_grid": x_grid,
-        "y_grid": y_grid,
-        "c_max": actual_max,
+        "nn": nn_sub.tolist(),
+        "ns": ns_sub.tolist(),
+        "times": times_sub.tolist(),
+        "x_grid": [round(x, 4) for x in x_grid],
+        "y_grid": [round(y, 4) for y in y_grid],
+        "c_max": round(actual_max, 4),
         "nn_time": nn_time,
         "ns_time": ns_time,
         "speedup": speedup,
