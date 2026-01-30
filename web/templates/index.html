@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proppant Transport Simulator</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body class="dark-theme">
+    <header>
+        <h1>Proppant Transport Simulator</h1>
+        <button class="theme-btn" id="theme-toggle" title="Toggle theme">
+            <span class="icon-sun">&#9728;</span>
+            <span class="icon-moon">&#9790;</span>
+        </button>
+    </header>
+
+    <main>
+        <aside class="parameters-panel">
+            <h2>Parameters</h2>
+
+            <div class="param-group">
+                <label for="c_in">Inlet Concentration:</label>
+                <input type="number" id="c_in" value="0.3" step="0.01" min="0.1" max="0.5">
+            </div>
+
+            <div class="param-group">
+                <label for="w0">Fracture Aperture (m):</label>
+                <input type="number" id="w0" value="0.005" step="0.001" min="0.001" max="0.01">
+            </div>
+
+            <div class="param-group">
+                <label for="mu0">Viscosity (Pa-s):</label>
+                <input type="number" id="mu0" value="0.001" step="0.0001" min="0.0001" max="0.01">
+            </div>
+
+            <div class="param-group">
+                <label for="Q">Flow Rate (m2/s):</label>
+                <input type="number" id="Q" value="0.05" step="0.01" min="0.01" max="0.1">
+            </div>
+
+            <div class="param-group">
+                <label for="chi">Chi:</label>
+                <input type="number" id="chi" value="5.0" step="0.5" min="1.0" max="10.0">
+            </div>
+
+            <div class="param-group">
+                <label for="c_in_times">Injection Time (s):</label>
+                <input type="number" id="c_in_times" value="50" step="10" min="10" max="200">
+            </div>
+
+            <button class="run-btn" id="run-btn">
+                <span class="btn-text">RUN SIMULATION</span>
+                <span class="btn-loader"></span>
+            </button>
+
+            <div class="status-message" id="status-message"></div>
+
+            <div class="metrics-panel">
+                <h3>Metrics</h3>
+                <div class="metric">
+                    <span class="metric-label">NN Time:</span>
+                    <span class="metric-value" id="nn-time">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">NS Time:</span>
+                    <span class="metric-value" id="ns-time">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Speedup:</span>
+                    <span class="metric-value" id="speedup">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">L2 Error:</span>
+                    <span class="metric-value" id="l2-error">-</span>
+                </div>
+            </div>
+        </aside>
+
+        <section class="visualization-area">
+            <div class="plot-container">
+                <h3>Neural Network Model</h3>
+                <div class="plot" id="nn-plot"></div>
+            </div>
+
+            <div class="plot-container">
+                <h3>Numerical Solver (NS)</h3>
+                <div class="plot" id="ns-plot"></div>
+            </div>
+
+            <div class="timelapse-controls">
+                <button class="control-btn" id="play-btn" title="Play/Pause (Space)">
+                    <span class="play-icon">&#9658;</span>
+                    <span class="pause-icon">&#10074;&#10074;</span>
+                </button>
+                <span class="time-label" id="time-current">0.0 s</span>
+                <input type="range" id="time-slider" min="0" max="100" value="0">
+                <span class="time-label" id="time-max">0.0 s</span>
+                <div class="speed-control">
+                    <label for="playback-speed">Speed:</label>
+                    <select id="playback-speed">
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="2">2x</option>
+                        <option value="4">4x</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
