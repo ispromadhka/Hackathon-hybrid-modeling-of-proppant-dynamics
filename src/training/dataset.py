@@ -31,12 +31,30 @@ from src.solver.generation import load_generation_config, _values_from_spec, gen
 from src.solver.to_torch import build_torch_data
 
 
+def validate_params(params_raw: np.ndarray, gen_cfg: dict) -> bool:
+    """Проверка физической корректности параметров."""
+    if len(params_raw) < 7:
+        return False
+    c_in, w0, mu0, Q, chi, c_in_times, dT = params_raw[:7]
+
+    cmax = float(gen_cfg.get('physics', {}).get('cmax', 0.635))
+
+    if w0 <= 0 or mu0 <= 0 or chi <= 0 or c_in_times <= 0 or dT <= 0:
+        return False
+    if c_in < 0 or c_in > cmax:
+        return False
+    if Q >= 0:
+        return False
+    return True
+
+
 class ProppantDataset(Dataset):
     """Dataset of proppant transport simulations."""
 
-    def __init__(self, data_dir: Path, transform=None):
+    def __init__(self, data_dir: Path, transform=None, gen_cfg: dict = None):
         self.data_dir = Path(data_dir)
         self.transform = transform
+        self.gen_cfg = gen_cfg
 
         self.files = sorted(self.data_dir.glob("sample_*.npz"))
 
@@ -47,6 +65,16 @@ class ProppantDataset(Dataset):
             self.n_times = data['concentrations'].shape[0]
             self.ny = data['concentrations'].shape[1]
             self.nx = data['concentrations'].shape[2]
+
+        if self.gen_cfg:
+            invalid_files = []
+            for f in self.files:
+                with np.load(f) as data:
+                    if 'params_raw' in data:
+                        if not validate_params(data['params_raw'], self.gen_cfg):
+                            invalid_files.append(f)
+            if invalid_files:
+                raise ValueError(f"Found {len(invalid_files)} files with invalid parameters")
 
     def __len__(self) -> int:
         return len(self.files)
@@ -257,7 +285,7 @@ def generate_dataset(
     sampling = str(ds_cfg.get('sampling', '')).lower()
     ds_seed = int(ds_cfg.get('seed', seed))
 
-    if sampling == 'lhs':
+    if sampling == 'random' or sampling == 'lhs':
         p = gen_cfg.get('params', {})
         keys = ['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times']
         grids = []
@@ -277,16 +305,50 @@ def generate_dataset(
 
         def _params_to_path(params: tuple, root: Path) -> Path:
             c_in, w0, mu0, Q, chi, c_in_times, dT = params
-            # Format must match generation.py: t{:.0f} not t{:d}
             return root / 'simulation_timeseries' / f"c{c_in:.3f}_w{w0:.3f}_mu{mu0:.3f}_Q{Q:.3f}_chi{chi:.1f}_t{c_in_times:.0f}_dT{dT:.1f}_series.npz"
 
+        def _get_existing_params(timeseries_root: Path) -> set:
+            """Получить множество существующих комбинаций параметров."""
+            existing = set()
+            for npz_file in timeseries_root.glob("*_series.npz"):
+                try:
+                    name = npz_file.stem.replace("_series", "")
+                    parts = name.split("_")
+                    if len(parts) >= 7:
+                        c_in = float(parts[0][1:])
+                        w0 = float(parts[1][1:])
+                        mu0 = float(parts[2][2:])
+                        Q = float(parts[3][1:])
+                        chi = float(parts[4][3:])
+                        c_in_times = float(parts[5][1:])
+                        dT = float(parts[6][2:])
+                        existing.add((c_in, w0, mu0, Q, chi, c_in_times, dT))
+                except Exception:
+                    continue
+            return existing
+
         params_set: set[tuple] = set()
-        timeseries_root = Path(project_root)
-        batch = max(256, target_n * 4)
+        timeseries_root = project_root / 'simulation_timeseries'
+        timeseries_root.mkdir(parents=True, exist_ok=True)
+        existing_params = _get_existing_params(timeseries_root)
+
+        rng = np.random.default_rng(ds_seed)
         attempt = 0
-        while len(params_set) < target_n:
-            u = latin_hypercube_sampling(batch, len(keys), seed=ds_seed + attempt)
-            for i in range(int(u.shape[0])):
+        max_attempts = target_n * 100
+
+        while len(params_set) < target_n and attempt < max_attempts:
+            if sampling == 'random':
+                chosen = []
+                for j in range(len(keys)):
+                    vals = grids[j]
+                    idx = rng.integers(0, len(vals))
+                    chosen.append(float(vals[idx]))
+                dT_idx = rng.integers(0, len(dT_vals))
+                chosen.append(float(dT_vals[dT_idx]))
+            else:
+                batch = max(256, target_n * 4)
+                u = latin_hypercube_sampling(batch, len(keys), seed=ds_seed + attempt)
+                i = attempt % batch
                 chosen = []
                 for j in range(len(keys)):
                     vals = grids[j]
@@ -294,25 +356,34 @@ def generate_dataset(
                     if idx >= len(vals):
                         idx = len(vals) - 1
                     chosen.append(float(vals[idx]))
-                dT = float(dT_vals[(len(params_set) + i) % len(dT_vals)])
+                dT = float(dT_vals[(len(params_set) + attempt) % len(dT_vals)])
                 chosen.append(dT)
-                t = tuple(chosen)
+
+            t = tuple(chosen)
+            if not validate_params(np.array(t), gen_cfg):
+                attempt += 1
+                continue
+            if t not in existing_params and t not in params_set:
                 if _params_to_path(t, timeseries_root).exists():
+                    existing_params.add(t)
                     continue
                 params_set.add(t)
-                if len(params_set) >= target_n:
-                    break
             attempt += 1
-            if attempt > 1000:
-                break
+
         if len(params_set) < target_n:
             for combo in itertools.product(*[list(map(float, v)) for v in grids], [float(v) for v in dT_vals]):
                 t = tuple(combo)
+                if not validate_params(np.array(t), gen_cfg):
+                    continue
+                if t in existing_params or t in params_set:
+                    continue
                 if _params_to_path(t, timeseries_root).exists():
+                    existing_params.add(t)
                     continue
                 params_set.add(t)
                 if len(params_set) >= target_n:
                     break
+
         if len(params_set) < target_n:
             raise RuntimeError(f"Not enough new combinations to add {target_n} samples (available new={len(params_set)})")
         params_list = list(params_set)[:target_n]
@@ -368,10 +439,13 @@ def create_dataloaders(
     data_dir: Path,
     batch_size: int = 8,
     train_ratio: float = 0.8,
-    num_workers: int = 0
+    num_workers: int = 0,
+    config_path: Path | None = None
 ) -> Tuple[DataLoader, DataLoader]:
     """Create train and validation dataloaders."""
-    dataset = ProppantDataset(data_dir)
+    project_root = Path(data_dir).parent.parent
+    gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
+    dataset = ProppantDataset(data_dir, gen_cfg=gen_cfg)
 
     n_train = int(len(dataset) * train_ratio)
     n_val = len(dataset) - n_train

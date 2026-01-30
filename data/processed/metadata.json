@@ -1,6 +1,6 @@
 {
   "source": "C:\\Users\\OneVay\\Documents\\hack\\Hackathon-hybrid-modeling-of-proppant-dynamics\\torch_data\\data.pt",
-  "n_samples": 254,
+  "n_samples": 854,
   "nx": 100,
   "ny": 100,
   "L": 60.0,

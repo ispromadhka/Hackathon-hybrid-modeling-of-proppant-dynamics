@@ -95,31 +95,65 @@ class Trainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         device: str = 'cpu',
-        lr: float = 1e-3,
+        optimizer_cfg: dict = None,
+        scheduler_cfg: dict = None,
+        loss_cfg: dict = None,
+        trainer_cfg: dict = None,
         n_epochs: int = 100,
         checkpoint_dir: Path = None,
-        patience: int = 8,
-        min_delta: float = 1e-4
+        start_epoch: int = 0
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
         self.n_epochs = n_epochs
+        self.start_epoch = start_epoch
 
-        self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        optimizer_cfg = optimizer_cfg or {}
+        opt_type = optimizer_cfg.get('type', 'AdamW').lower()
+        lr = optimizer_cfg.get('lr', 1e-3)
+        weight_decay = optimizer_cfg.get('weight_decay', 1e-4)
+        betas = tuple(optimizer_cfg.get('betas', [0.9, 0.999]))
+        eps = optimizer_cfg.get('eps', 1e-8)
 
-        warmup_epochs = min(5, max(1, n_epochs // 10))
+        if opt_type == 'adamw':
+            self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+        elif opt_type == 'adam':
+            self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+        else:
+            self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+
+        scheduler_cfg = scheduler_cfg or {}
+        sched_type = scheduler_cfg.get('type', 'cosine_with_warmup')
+        warmup_epochs = scheduler_cfg.get('warmup_epochs', min(5, max(1, n_epochs // 10)))
         self.warmup_epochs = warmup_epochs
         self.scheduler = None
-        if n_epochs > warmup_epochs:
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=n_epochs - warmup_epochs,
-                eta_min=lr * 0.01
-            )
 
-        self.criterion = CombinedLoss(mse_weight=1.0, rel_weight=0.5, temporal_weight=0.1)
+        if sched_type == 'cosine_with_warmup' and n_epochs > warmup_epochs:
+            T_max = scheduler_cfg.get('T_max')
+            if T_max is None:
+                T_max = n_epochs - warmup_epochs
+            eta_min = scheduler_cfg.get('eta_min', lr * 0.01)
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=T_max, eta_min=eta_min
+            )
+        elif sched_type == 'step':
+            step_size = scheduler_cfg.get('step_size', 30)
+            gamma = scheduler_cfg.get('gamma', 0.1)
+            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
+
+        loss_cfg = loss_cfg or {}
+        self.criterion = CombinedLoss(
+            mse_weight=loss_cfg.get('mse_weight', 1.0),
+            rel_weight=loss_cfg.get('rel_weight', 0.5),
+            temporal_weight=loss_cfg.get('temporal_weight', 0.1)
+        )
+
+        trainer_cfg = trainer_cfg or {}
+        self.patience = trainer_cfg.get('patience', 8)
+        self.min_delta = trainer_cfg.get('min_delta', 1e-4)
+        self.grad_clip = trainer_cfg.get('grad_clip', 1.0)
 
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
@@ -129,11 +163,65 @@ class Trainer:
         self.val_losses = []
         self.best_val_loss = float('inf')
         self.best_accuracy = 0.0
-
-        self.patience = patience
-        self.min_delta = min_delta
         self.patience_counter = 0
         self.early_stop = False
+
+    def load_checkpoint(self, checkpoint_path: Path):
+        """Загрузка чекпоинта для дообучения."""
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        state_dict = checkpoint['model_state_dict']
+
+        # Фильтруем параметры и buffers, которые могут не совпадать из-за разных размеров
+        model_state = self.model.state_dict()
+        filtered_state_dict = {}
+        skipped_keys = []
+
+        for key, value in state_dict.items():
+            if key in model_state:
+                # Проверяем совпадение размеров для buffers и параметров
+                if model_state[key].shape != value.shape:
+                    # Пропускаем buffers с несовпадающими размерами (будут пересозданы)
+                    if 'buffer' in key.lower() or key.endswith('.kernel') or 'spatial_smooth' in key:
+                        skipped_keys.append(f"{key} (shape mismatch: {value.shape} vs {model_state[key].shape})")
+                        continue
+                    else:
+                        # Для параметров с несовпадающими размерами тоже пропускаем
+                        skipped_keys.append(f"{key} (shape mismatch: {value.shape} vs {model_state[key].shape})")
+                        continue
+                filtered_state_dict[key] = value
+            else:
+                skipped_keys.append(f"{key} (not in model)")
+
+        missing_keys = set(model_state.keys()) - set(filtered_state_dict.keys())
+        # Удаляем buffers из missing_keys, так как они будут пересозданы при инициализации
+        missing_keys = {k for k in missing_keys if not (
+            k.endswith('.kernel') or 'spatial_smooth' in k or 'buffer' in k.lower()
+        )}
+
+        self.model.load_state_dict(filtered_state_dict, strict=False)
+
+        if skipped_keys:
+            print(f"Warning: Skipped {len(skipped_keys)} keys during checkpoint loading:")
+            for key in skipped_keys[:5]:
+                print(f"  - {key}")
+            if len(skipped_keys) > 5:
+                print(f"  ... and {len(skipped_keys) - 5} more")
+
+        if missing_keys:
+            print(f"Warning: {len(missing_keys)} model keys not found in checkpoint (will use random initialization)")
+
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.start_epoch = checkpoint.get('epoch', 0)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        self.best_accuracy = checkpoint.get('metrics', {}).get('accuracy', 0.0)
+
+        if self.scheduler and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        print(f"Resumed from epoch {self.start_epoch}, best_val_loss={self.best_val_loss:.4e}")
 
     def train_epoch(self) -> float:
         self.model.train()
@@ -155,7 +243,7 @@ class Trainer:
             loss = self.criterion(pred, target)
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.grad_clip)
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -204,6 +292,9 @@ class Trainer:
             'metrics': metrics,
         }
 
+        if self.scheduler:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+
         torch.save(checkpoint, self.checkpoint_dir / 'last.pt')
         if is_best:
             torch.save(checkpoint, self.checkpoint_dir / 'best.pt')
@@ -222,7 +313,7 @@ class Trainer:
 
         initial_lr = self.optimizer.param_groups[0]['lr']
 
-        for epoch in range(1, n_epochs + 1):
+        for epoch in range(self.start_epoch + 1, self.start_epoch + n_epochs + 1):
             t0 = time.time()
 
             # Warmup
@@ -283,10 +374,27 @@ class Trainer:
         print(f"Best accuracy: {self.best_accuracy:.1f}%")
 
 
-def main(epochs: int = 100, lr: float = 1e-3, patience: int = 8):
+def main(config_path: Path = None, resume_from: Path = None):
     """Main training entry point."""
-    data_dir = Path(__file__).parent.parent.parent / 'data' / 'processed'
-    checkpoint_dir = Path(__file__).parent.parent.parent / 'checkpoints'
+    project_root = Path(__file__).parent.parent.parent
+    data_dir = project_root / 'data' / 'processed'
+    checkpoint_dir = project_root / 'checkpoints'
+
+    if config_path is None:
+        config_path = project_root / 'configs' / 'default.json'
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+
+    with open(config_path) as f:
+        cfg = json.load(f)
+
+    train_cfg = cfg.get('training', {})
+    optimizer_cfg = train_cfg.get('optimizer', {})
+    scheduler_cfg = train_cfg.get('scheduler', {})
+    loss_cfg = train_cfg.get('loss', {})
+    trainer_cfg = train_cfg.get('trainer', {})
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -298,27 +406,32 @@ def main(epochs: int = 100, lr: float = 1e-3, patience: int = 8):
     with open(data_dir / 'metadata.json') as f:
         metadata = json.load(f)
 
-    batch_size = 8
+    batch_size = train_cfg.get('batch_size', 8)
     try:
         nx = int(metadata.get('nx', 0))
         ny = int(metadata.get('ny', 0))
         n_times_meta = int(metadata.get('n_times', 0))
         if nx * ny * max(n_times_meta, 1) >= 2_000_000:
-            batch_size = 4
+            batch_size = min(batch_size, 4)
         if nx * ny * max(n_times_meta, 1) >= 4_000_000:
-            batch_size = 2
+            batch_size = min(batch_size, 2)
     except Exception:
-        batch_size = 4
+        batch_size = min(batch_size, 4)
 
+    train_ratio = train_cfg.get('train_ratio', 0.8)
     train_loader, val_loader = create_dataloaders(
-        data_dir, batch_size=batch_size, train_ratio=0.8, num_workers=0
+        data_dir, batch_size=batch_size, train_ratio=train_ratio, num_workers=0, config_path=config_path
     )
 
     sample = next(iter(train_loader))
     n_times = sample['trajectory'].shape[1]
     n_params = sample['params'].shape[1]
 
-    print(f"Training for {epochs} epochs (lr={lr}, patience={patience})...")
+    n_epochs = train_cfg.get('n_epochs', 100)
+    lr = optimizer_cfg.get('lr', 1e-3)
+    patience = trainer_cfg.get('patience', 8)
+
+    print(f"Training for {n_epochs} epochs (lr={lr}, patience={patience})...")
     print(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val")
     print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps, {n_params} params")
 
@@ -335,11 +448,28 @@ def main(epochs: int = 100, lr: float = 1e-3, patience: int = 8):
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        lr=lr,
-        n_epochs=epochs,
-        checkpoint_dir=checkpoint_dir,
-        patience=patience
+        optimizer_cfg=optimizer_cfg,
+        scheduler_cfg=scheduler_cfg,
+        loss_cfg=loss_cfg,
+        trainer_cfg=trainer_cfg,
+        n_epochs=n_epochs,
+        checkpoint_dir=checkpoint_dir
     )
+
+    resume_path = resume_from or train_cfg.get('resume_from')
+    if resume_path:
+        if isinstance(resume_path, str):
+            resume_path = Path(resume_path)
+        # Все относительные пути разрешаются относительно папки checkpoints
+        if not resume_path.is_absolute():
+            resume_path = checkpoint_dir / resume_path
+        if not resume_path.exists():
+            available = list(checkpoint_dir.glob('*.pt')) if checkpoint_dir.exists() else []
+            raise FileNotFoundError(
+                f"Checkpoint not found: {resume_path}\n"
+                f"Available checkpoints in {checkpoint_dir}: {[p.name for p in available]}"
+            )
+        trainer.load_checkpoint(resume_path)
 
     trainer.train()
 

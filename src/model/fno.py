@@ -94,12 +94,13 @@ class GaussianSmooth(nn.Module):
         self.kernel_size = kernel_size
 
         # Create Gaussian kernel
-        coords = torch.arange(kernel_size).float() - kernel_size // 2
+        coords = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
         g = torch.exp(-coords**2 / (2 * sigma**2))
         kernel_1d = g / g.sum()
         kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
+        # Создаем независимый tensor для каждого канала
         kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
-        kernel_2d = kernel_2d.expand(channels, 1, -1, -1)
+        kernel_2d = kernel_2d.repeat(channels, 1, 1, 1)
 
         self.register_buffer('kernel', kernel_2d)
         self.padding = kernel_size // 2

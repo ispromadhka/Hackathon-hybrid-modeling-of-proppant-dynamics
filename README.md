@@ -34,6 +34,8 @@ Requires NVIDIA GPU with Docker GPU support.
 ```bash
 pip install -r requirements.txt
 python app.py --port 8050
+
+# Open http://127.0.0.1:8050 or http://localhost:8050 in browser
 ```
 
 ## CLI Commands
@@ -43,11 +45,141 @@ python app.py --port 8050
 python app.py --generate --samples 500 --workers 8
 
 # Train FNO model
-python app.py --train --epochs 100 --patience 15
+python app.py --train
 
-# Run web app
+# Resume training from checkpoint
+python app.py --train --resume best.pt
+
+# Override config parameters
+python app.py --train --epochs 200 --lr 0.0005 --patience 10
+
+# Run web app (default: http://127.0.0.1:8050)
 python app.py --port 8050
+
+# For network access (accessible from other devices)
+python app.py --host 0.0.0.0 --port 8050
 ```
+
+## Training Configuration
+
+Training parameters are configured in `configs/default.json` under the `training` section:
+
+```json
+{
+  "training": {
+    "n_epochs": 100,
+    "batch_size": 8,
+    "train_ratio": 0.8,
+    "resume_from": null,
+    "optimizer": {
+      "type": "AdamW",
+      "lr": 0.001,
+      "weight_decay": 0.0001,
+      "betas": [0.9, 0.999],
+      "eps": 1e-8
+    },
+    "scheduler": {
+      "type": "cosine_with_warmup",
+      "warmup_epochs": 5,
+      "T_max": null,
+      "eta_min": 0.00001
+    },
+    "loss": {
+      "mse_weight": 1.0,
+      "rel_weight": 0.5,
+      "temporal_weight": 0.1
+    },
+    "trainer": {
+      "patience": 8,
+      "min_delta": 0.0001,
+      "grad_clip": 1.0
+    }
+  }
+}
+```
+
+**Optimizer options:**
+- `type`: `"AdamW"` or `"Adam"`
+- `lr`: Learning rate
+- `weight_decay`: L2 regularization
+- `betas`: Adam momentum parameters
+- `eps`: Numerical stability epsilon
+
+**Scheduler options:**
+- `type`: `"cosine_with_warmup"` or `"step"`
+- `warmup_epochs`: Number of warmup epochs (for cosine_with_warmup)
+- `T_max`: Maximum iterations for cosine annealing (null = auto)
+- `eta_min`: Minimum learning rate
+- `step_size` and `gamma`: For step scheduler
+
+**Loss weights:**
+- `mse_weight`: Mean squared error weight
+- `rel_weight`: Relative L2 error weight
+- `temporal_weight`: Temporal consistency weight
+
+**Trainer settings:**
+- `patience`: Early stopping patience (epochs without improvement)
+- `min_delta`: Minimum improvement threshold
+- `grad_clip`: Gradient clipping norm
+
+### Resuming Training
+
+To resume training from a checkpoint, set `resume_from` in config or use CLI. **All checkpoint paths are relative to the `checkpoints/` directory:**
+
+```bash
+# Resume from last checkpoint (looks in checkpoints/last.pt)
+python app.py --train --resume last.pt
+
+# Resume from best checkpoint (looks in checkpoints/best.pt)
+python app.py --train --resume best.pt
+
+# You can also use subdirectories (looks in checkpoints/models/best.pt)
+python app.py --train --resume models/best.pt
+```
+
+**In config file (`configs/default.json`):**
+```json
+{
+  "training": {
+    "resume_from": "best.pt"  // Relative to checkpoints/ directory
+  }
+}
+```
+
+Checkpoints are saved in `checkpoints/` directory:
+- `checkpoints/last.pt` — Latest checkpoint
+- `checkpoints/best.pt` — Best validation loss checkpoint
+
+**Note:** If you provide an absolute path, it will be used as-is. Otherwise, the path is resolved relative to the `checkpoints/` directory.
+
+When resuming, the trainer restores:
+- Model weights
+- Optimizer state
+- Scheduler state
+- Training epoch
+- Best validation metrics
+
+## Data Generation Modes
+
+The dataset generation supports different sampling strategies configured in `configs/default.json`:
+
+```json
+{
+  "dataset_generation": {
+    "sampling": "random",  // or "lhs"
+    "seed": 42
+  }
+}
+```
+
+**Sampling modes:**
+- `"random"` — Randomly selects parameter combinations from discrete grids, avoiding duplicates with existing simulations
+- `"lhs"` — Latin Hypercube Sampling for uniform parameter space coverage
+
+Both modes automatically:
+- Check for uniqueness against existing parameter combinations
+- Validate parameters for physical correctness (positive values, valid ranges, etc.)
+- Skip already generated simulations
 
 ### CLI Flags
 
@@ -57,8 +189,11 @@ python app.py --port 8050
 | `--train` | - | Train FNO model |
 | `--samples` | 500 | Number of samples to generate |
 | `--workers` | 1 | Parallel workers (-1 = all CPUs) |
-| `--epochs` | 100 | Training epochs |
-| `--patience` | 15 | Early stopping patience |
+| `--config` | `configs/default.json` | Config file path |
+| `--epochs` | - | Training epochs (overrides config) |
+| `--lr` | - | Learning rate (overrides config) |
+| `--patience` | - | Early stopping patience (overrides config) |
+| `--resume` | - | Resume from checkpoint (e.g., "last.pt") |
 | `--port` | 8050 | Web app port |
 
 ## FNO Architecture
