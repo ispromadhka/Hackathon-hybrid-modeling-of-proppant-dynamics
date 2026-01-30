@@ -33,6 +33,16 @@ if str(_solver_dir) not in sys.path:
     sys.path.append(str(_solver_dir))
 from CPU_solver.SystemSolverCPU import SolverCPU
 
+
+def _worker_init():
+    """Initialize worker process with BLAS threading disabled to avoid deadlock."""
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
+
 def load_generation_config(config_path: Path | None = None, project_root: Path | None = None) -> dict:
     if project_root is None:
         project_root = Path(__file__).parent.parent.parent
