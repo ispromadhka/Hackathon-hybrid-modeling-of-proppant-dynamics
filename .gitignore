@@ -12,13 +12,26 @@ env/
 *.egg-info/
 dist/
 build/
+*.egg
+*.egg-info/
+.python-version
 
 # Data (large files)
 data/processed/
 data/raw/
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.pkl
+*.pickle
 
 # Model checkpoints (large)
 checkpoints/
+*.ckpt
+*.safetensors
 
 # Jupyter
 .ipynb_checkpoints/
@@ -27,33 +40,61 @@ checkpoints/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.AppleDouble
+.LSOverride
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
 
 # Logs
 *.log
+logs/
+*.out
 
 # Reference frames (temporary)
 reference_frames/
 
-#generation data
+# Generation data
 simulation_results.csv
-.simulation_gifs/*
-.simulation_data/*
-.simulation_timeseries/*
-.torch_data/
 simulation_data/
 simulation_timeseries/
 torch_data/
+*.tmp
+*.tmp.*
+tmp*/
+.simulation_gifs/
+.simulation_data/
+.simulation_timeseries/
+.torch_data/
 
-#test files
-.src/solver/t.ipynb
-.src/solver/t.py
+# Visualizations
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+plots/
+figures/
+results/
+
+# Test files
 src/solver/t.ipynb
 src/solver/t.py
+*.test.py
+test_*.py
+*_test.py
 
 # Caches
 __pypackages__/
@@ -65,3 +106,34 @@ htmlcov/
 .coverage
 coverage.xml
 .cursor/
+.tox/
+.hypothesis/
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# Application specific
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+build/
+dist/
+*.whl
+*.tar.gz
