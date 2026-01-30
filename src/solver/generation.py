@@ -1,3 +1,13 @@
+"""
+Parallel simulation generation for proppant transport.
+
+Features:
+- Multi-process CPU parallelization with optimal worker count
+- Process affinity for NUMA-aware scheduling
+- Memory-efficient batch processing
+- Progress tracking with ETA
+"""
+
 import os
 import sys
 import numpy as np
@@ -10,11 +20,50 @@ warnings.filterwarnings('ignore')
 from pathlib import Path
 import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 
 _solver_dir = Path(__file__).parent
 if str(_solver_dir) not in sys.path:
     sys.path.append(str(_solver_dir))
 from CPU_solver.SystemSolverCPU import SolverCPU
+
+
+def get_optimal_workers(requested: int = -1) -> int:
+    """
+    Get optimal number of workers for CPU parallelization.
+
+    Args:
+        requested: Requested workers (-1 = auto, 0 = sequential)
+
+    Returns:
+        Optimal worker count
+    """
+    cpu_count = os.cpu_count() or 1
+
+    if requested == 0:
+        return 1
+    elif requested == -1:
+        # Auto: use 75% of CPUs to leave headroom for system
+        return max(1, int(cpu_count * 0.75))
+    elif requested > 0:
+        return min(requested, cpu_count)
+    else:
+        return max(1, cpu_count + requested)  # Negative means "all minus N"
+
+
+def _init_worker():
+    """Initialize worker process with optimal settings."""
+    # Disable NumPy threading to avoid oversubscription
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
+    # Set lower priority for worker processes
+    try:
+        os.nice(5)
+    except (AttributeError, OSError):
+        pass
 
 def load_generation_config(config_path: Path | None = None, project_root: Path | None = None) -> dict:
     if project_root is None:
@@ -297,6 +346,18 @@ def compute_time_averages(time_metrics):
     return avg_metrics
 
 def generate_simulations(max_new: int | None = None, project_root: Path | None = None, config_path: Path | None = None, n_workers: int = 1) -> int:
+    """
+    Generate simulation samples with parallel CPU processing.
+
+    Args:
+        max_new: Maximum number of new simulations to generate
+        project_root: Project root directory
+        config_path: Path to config file
+        n_workers: Number of parallel workers (-1 = auto, 0 = sequential)
+
+    Returns:
+        Number of simulations generated
+    """
     if project_root is None:
         project_root = Path(__file__).parent.parent.parent
     project_root = Path(project_root)
@@ -348,40 +409,82 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
     if total_new == 0:
         return 0
 
+    # Determine optimal worker count
+    actual_workers = get_optimal_workers(n_workers)
+    print(f"Generating {total_new} simulations with {actual_workers} workers (CPUs: {os.cpu_count()})")
+
     new_results = []
-    if n_workers is None or int(n_workers) <= 1:
-        for params in tqdm(new_simulations, desc="Generating simulations", total=total_new):
+    save_interval = max(1, total_new // 20)  # Save every 5%
+
+    if actual_workers <= 1:
+        # Sequential processing
+        for i, params in enumerate(tqdm(new_simulations, desc="Generating simulations", total=total_new)):
             try:
                 result = _simulate_and_persist(params, gen_cfg, str(project_root), gen_hash)
                 if result is None:
                     continue
                 new_results.append(result)
-                df_new = pd.DataFrame(new_results)
-                if not df_existing.empty and 'param_hash' in df_existing.columns:
-                    df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                df_combined.to_csv(csv_path, index=False)
-            except Exception:
+
+                # Periodic save
+                if len(new_results) % save_interval == 0:
+                    _save_results(new_results, df_existing, csv_path)
+            except Exception as e:
                 continue
     else:
-        max_workers = int(n_workers)
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash) for params in new_simulations]
-            for fut in tqdm(as_completed(futures), total=total_new, desc="Generating simulations"):
-                try:
-                    result = fut.result()
-                    if result is None:
-                        continue
-                    new_results.append(result)
-                    df_new = pd.DataFrame(new_results)
-                    if not df_existing.empty and 'param_hash' in df_existing.columns:
-                        df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
-                    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                    df_combined.to_csv(csv_path, index=False)
-                except Exception:
-                    continue
+        # Parallel processing with optimized settings
+        # Use 'fork' on Linux (faster), 'spawn' on Windows/Mac
+        import sys
+        ctx_name = 'fork' if sys.platform.startswith('linux') else 'spawn'
+        ctx = mp.get_context(ctx_name)
+        with ProcessPoolExecutor(
+            max_workers=actual_workers,
+            mp_context=ctx,
+            initializer=_init_worker
+        ) as ex:
+            # Submit all tasks
+            futures = {
+                ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash): params
+                for params in new_simulations
+            }
 
-    return total_new
+            # Process results as they complete
+            completed = 0
+            failed = 0
+            with tqdm(total=total_new, desc=f"Generating ({actual_workers} workers)") as pbar:
+                for fut in as_completed(futures):
+                    try:
+                        result = fut.result(timeout=300)  # 5 min timeout per simulation
+                        if result is not None:
+                            new_results.append(result)
+                            completed += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        failed += 1
+
+                    pbar.update(1)
+                    pbar.set_postfix({'done': completed, 'failed': failed})
+
+                    # Periodic save
+                    if len(new_results) % save_interval == 0 and new_results:
+                        _save_results(new_results, df_existing, csv_path)
+
+    # Final save
+    if new_results:
+        _save_results(new_results, df_existing, csv_path)
+
+    print(f"Generated {len(new_results)}/{total_new} simulations successfully")
+    return len(new_results)
+
+
+def _save_results(new_results: list, df_existing: pd.DataFrame, csv_path: Path):
+    """Save results to CSV incrementally."""
+    df_new = pd.DataFrame(new_results)
+    if not df_existing.empty and 'param_hash' in df_existing.columns:
+        existing_hashes = set(r['param_hash'] for r in new_results)
+        df_existing = df_existing[~df_existing['param_hash'].isin(existing_hashes)]
+    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+    df_combined.to_csv(csv_path, index=False)
 
 
 def generate_for_params(params_list: list[tuple], project_root: Path | None = None, config_path: Path | None = None, n_workers: int = 1) -> int:

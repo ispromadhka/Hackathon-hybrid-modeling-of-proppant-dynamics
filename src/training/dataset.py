@@ -367,9 +367,24 @@ def create_dataloaders(
     data_dir: Path,
     batch_size: int = 8,
     train_ratio: float = 0.8,
-    num_workers: int = 0
+    num_workers: int = 0,
+    pin_memory: bool = None,
 ) -> Tuple[DataLoader, DataLoader]:
-    """Create train and validation dataloaders."""
+    """
+    Create train and validation dataloaders with optimized settings.
+
+    Args:
+        data_dir: Directory with processed data
+        batch_size: Batch size
+        train_ratio: Fraction of data for training
+        num_workers: Number of data loading workers
+        pin_memory: Pin memory for faster GPU transfer (auto-detect if None)
+
+    Returns:
+        train_loader, val_loader
+    """
+    import torch
+
     dataset = ProppantDataset(data_dir)
 
     n_train = int(len(dataset) * train_ratio)
@@ -379,12 +394,21 @@ def create_dataloaders(
         dataset, [n_train, n_val]
     )
 
+    # Auto-detect pin_memory
+    if pin_memory is None:
+        pin_memory = torch.cuda.is_available()
+
+    # Persistent workers for faster epoch transitions (if num_workers > 0)
+    persistent = num_workers > 0
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -392,7 +416,9 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     return train_loader, val_loader
