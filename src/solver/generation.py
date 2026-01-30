@@ -223,55 +223,61 @@ def run_simulation(params, gen_cfg: dict):
     return s, time_series_data, time_stamps
 
 def _simulate_and_persist(params, gen_cfg: dict, project_root: str, gen_hash: str):
-    cwd = os.getcwd()
-    os.chdir(str(project_root))
-    try:
-        param_hash = get_param_hash(params)
-        s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
-        param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
-        ts_path = save_time_series(time_series_data, time_stamps, param_str)
+    """Run simulation and save results. Uses absolute paths (no os.chdir)."""
+    project_root = Path(project_root)
 
-        time_metrics = calculate_metrics(time_series_data, s.w)
-        time_stats = compute_time_averages(time_metrics) if time_metrics else {}
+    param_hash = get_param_hash(params)
+    s, time_series_data, time_stamps = run_simulation(params, gen_cfg)
+    param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
 
-        final_frame = time_series_data[-1]
-        if np.max(s.w) > 0:
-            final_c = final_frame / s.w
-        else:
-            final_c = final_frame
-        final_metrics = {
-            'final_mean': np.mean(final_c),
-            'final_std': np.std(final_c),
-            'final_max': np.max(final_c),
-            'final_min': np.min(final_c),
-            'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
-        }
+    # Use absolute paths
+    ts_path = save_time_series(time_series_data, time_stamps, param_str, project_root)
 
-        matrix_path = f"simulation_data/{param_str}_final.npy"
-        np.save(matrix_path, final_frame)
+    time_metrics = calculate_metrics(time_series_data, s.w)
+    time_stats = compute_time_averages(time_metrics) if time_metrics else {}
 
-        result = {
-            'c_in': params[0], 'w0': params[1], 'mu0': params[2],
-            'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
-            'dT': params[6], 'param_hash': param_hash,
-            'gen_hash': gen_hash,
-            'matrix_path': matrix_path, 'timeseries_path': ts_path,
-            'total_steps': len(time_series_data),
-            'frames_count': len(time_series_data),
-            'max_time': time_stamps[-1] if time_stamps else 0.0
-        }
-        result.update(time_stats)
-        result.update(final_metrics)
-        return result
-    finally:
-        os.chdir(cwd)
+    final_frame = time_series_data[-1]
+    if np.max(s.w) > 0:
+        final_c = final_frame / s.w
+    else:
+        final_c = final_frame
+    final_metrics = {
+        'final_mean': np.mean(final_c),
+        'final_std': np.std(final_c),
+        'final_max': np.max(final_c),
+        'final_min': np.min(final_c),
+        'final_area_above_0.1': np.sum(final_c > 0.1) / final_c.size * 100
+    }
 
-def save_time_series(time_series_data, time_stamps, param_str):
-    ts_path = f'simulation_timeseries/{param_str}_series.npz'
+    # Use absolute path for matrix
+    matrix_path = project_root / 'simulation_data' / f"{param_str}_final.npy"
+    np.save(str(matrix_path), final_frame)
+
+    result = {
+        'c_in': params[0], 'w0': params[1], 'mu0': params[2],
+        'Q': params[3], 'chi': params[4], 'c_in_times': params[5],
+        'dT': params[6], 'param_hash': param_hash,
+        'gen_hash': gen_hash,
+        'matrix_path': str(matrix_path), 'timeseries_path': ts_path,
+        'total_steps': len(time_series_data),
+        'frames_count': len(time_series_data),
+        'max_time': time_stamps[-1] if time_stamps else 0.0
+    }
+    result.update(time_stats)
+    result.update(final_metrics)
+    return result
+
+def save_time_series(time_series_data, time_stamps, param_str, project_root=None):
+    """Save time series to NPZ file using absolute path."""
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.parent
+    project_root = Path(project_root)
+
+    ts_path = project_root / 'simulation_timeseries' / f'{param_str}_series.npz'
     Q_array = np.array(time_series_data)
     time_array = np.array(time_stamps)
-    np.savez_compressed(ts_path, Q=Q_array, times=time_array)
-    return ts_path
+    np.savez_compressed(str(ts_path), Q=Q_array, times=time_array)
+    return str(ts_path)
 
 def calculate_metrics(time_series_data, w):
     if len(time_series_data) == 0:
@@ -381,24 +387,45 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
                 continue
     else:
         max_workers = int(n_workers)
+        print(f"[INFO] Starting {total_new} simulations with {max_workers} workers...")
+
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash) for params in new_simulations]
+            futures = {}
+            print(f"[INFO] Submitting jobs...", end=" ", flush=True)
+            for i, params in enumerate(new_simulations):
+                fut = ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash)
+                futures[fut] = i
+            print(f"done ({len(futures)} jobs)")
+
             for fut in tqdm(as_completed(futures), total=total_new, desc="Generating simulations"):
                 try:
-                    result = fut.result()
+                    result = fut.result(timeout=600)
                     if result is None:
                         continue
                     new_results.append(result)
-                    df_new = pd.DataFrame(new_results)
-                    if not df_existing.empty and 'param_hash' in df_existing.columns:
-                        df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
-                    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                    df_combined.to_csv(csv_path, index=False)
+                    if len(new_results) % 10 == 0:
+                        df_new = pd.DataFrame(new_results)
+                        if not df_existing.empty and 'param_hash' in df_existing.columns:
+                            for r in new_results[-10:]:
+                                df_existing = df_existing[df_existing['param_hash'] != r['param_hash']]
+                        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                        df_combined.to_csv(csv_path, index=False)
+                except TimeoutError:
+                    errors.append("Timeout after 600s")
+                    print(f"\n[ERROR] Simulation timed out")
                 except Exception as e:
                     errors.append(str(e))
                     if len(errors) <= 3:
                         print(f"\n[ERROR] Simulation failed: {e}")
                     continue
+
+            if new_results:
+                df_new = pd.DataFrame(new_results)
+                if not df_existing.empty and 'param_hash' in df_existing.columns:
+                    for r in new_results:
+                        df_existing = df_existing[df_existing['param_hash'] != r['param_hash']]
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                df_combined.to_csv(csv_path, index=False)
 
     if errors:
         print(f"\n[WARNING] {len(errors)}/{total_new} simulations failed")
@@ -474,24 +501,49 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
                 continue
     else:
         max_workers = int(n_workers)
+        print(f"[INFO] Starting {len(params_list)} simulations with {max_workers} workers...")
+
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash) for params in params_list]
+            # Submit jobs in batches to show progress
+            futures = {}
+            print(f"[INFO] Submitting jobs...", end=" ", flush=True)
+            for i, params in enumerate(params_list):
+                fut = ex.submit(_simulate_and_persist, params, gen_cfg, str(project_root), gen_hash)
+                futures[fut] = i
+            print(f"done ({len(futures)} jobs)")
+
+            # Process completed futures
             for fut in tqdm(as_completed(futures), total=len(params_list), desc="Generating simulations"):
                 try:
-                    result = fut.result()
+                    result = fut.result(timeout=600)  # 10 min timeout per simulation
                     if result is None:
                         continue
                     new_results.append(result)
-                    df_new = pd.DataFrame(new_results)
-                    if not df_existing.empty and 'param_hash' in df_existing.columns:
-                        df_existing = df_existing[df_existing['param_hash'] != result['param_hash']]
-                    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                    df_combined.to_csv(csv_path, index=False)
+                    # Save every 10 results instead of every result (faster)
+                    if len(new_results) % 10 == 0:
+                        df_new = pd.DataFrame(new_results)
+                        if not df_existing.empty and 'param_hash' in df_existing.columns:
+                            for r in new_results[-10:]:
+                                df_existing = df_existing[df_existing['param_hash'] != r['param_hash']]
+                        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                        df_combined.to_csv(csv_path, index=False)
+                except TimeoutError:
+                    errors.append(f"Timeout after 600s")
+                    print(f"\n[ERROR] Simulation timed out")
                 except Exception as e:
                     errors.append(f"{e}")
                     if len(errors) <= 3:
                         print(f"\n[ERROR] Simulation failed: {e}")
                     continue
+
+            # Save remaining results
+            if new_results:
+                df_new = pd.DataFrame(new_results)
+                if not df_existing.empty and 'param_hash' in df_existing.columns:
+                    for r in new_results:
+                        df_existing = df_existing[df_existing['param_hash'] != r['param_hash']]
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                df_combined.to_csv(csv_path, index=False)
 
     if errors:
         print(f"\n[WARNING] {len(errors)} simulations failed. First error: {errors[0]}")
