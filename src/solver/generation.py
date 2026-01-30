@@ -9,7 +9,15 @@ import warnings
 warnings.filterwarnings('ignore')
 from pathlib import Path
 import json
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# Fix for macOS: use 'fork' instead of 'spawn' to avoid hanging
+if sys.platform == 'darwin':
+    try:
+        mp.set_start_method('fork', force=True)
+    except RuntimeError:
+        pass  # Already set
 
 _solver_dir = Path(__file__).parent
 if str(_solver_dir) not in sys.path:
