@@ -334,7 +334,11 @@ def generate_simulations(max_new: int | None = None, project_root: Path | None =
         mt = max_time_by_hash.get(param_hash, None)
         gh = gen_hash_by_hash.get(param_hash, None)
         stale = ((mt is not None) and (float(mt) < tmax_target - 1e-6)) or ((gh is not None) and (str(gh) != gen_hash))
-        if (param_hash not in existing_hashes) or stale:
+        # Check if NPZ file actually exists on disk
+        param_str = f"c{params[0]:.3f}_w{params[1]:.3f}_mu{params[2]:.3f}_Q{params[3]:.3f}_chi{params[4]:.1f}_t{params[5]:.0f}_dT{params[6]:.1f}"
+        npz_path = project_root / 'simulation_timeseries' / f"{param_str}_series.npz"
+        file_missing = not npz_path.exists()
+        if (param_hash not in existing_hashes) or stale or file_missing:
             new_simulations.append(params)
 
     if max_new is not None:
@@ -432,7 +436,11 @@ def generate_for_params(params_list: list[tuple], project_root: Path | None = No
         mt = max_time_by_hash.get(h, None)
         gh = gen_hash_by_hash.get(h, None)
         stale = ((mt is not None) and (float(mt) < tmax_target - 1e-6)) or ((gh is not None) and (str(gh) != gen_hash))
-        if (h not in existing_hashes) or stale:
+        # Check if NPZ file actually exists on disk
+        param_str = f"c{p[0]:.3f}_w{p[1]:.3f}_mu{p[2]:.3f}_Q{p[3]:.3f}_chi{p[4]:.1f}_t{p[5]:.0f}_dT{p[6]:.1f}"
+        npz_path = project_root / 'simulation_timeseries' / f"{param_str}_series.npz"
+        file_missing = not npz_path.exists()
+        if (h not in existing_hashes) or stale or file_missing:
             filtered.append(p)
     params_list = filtered
     if len(params_list) == 0:

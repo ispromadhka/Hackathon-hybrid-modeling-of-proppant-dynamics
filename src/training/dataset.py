@@ -277,7 +277,8 @@ def generate_dataset(
 
         def _params_to_path(params: tuple, root: Path) -> Path:
             c_in, w0, mu0, Q, chi, c_in_times, dT = params
-            return root / 'simulation_timeseries' / f"c{c_in:.3f}_w{w0:.3f}_mu{mu0:.3f}_Q{Q:.3f}_chi{chi:.1f}_t{int(c_in_times):d}_dT{dT:.1f}_series.npz"
+            # Format must match generation.py: t{:.0f} not t{:d}
+            return root / 'simulation_timeseries' / f"c{c_in:.3f}_w{w0:.3f}_mu{mu0:.3f}_Q{Q:.3f}_chi{chi:.1f}_t{c_in_times:.0f}_dT{dT:.1f}_series.npz"
 
         params_set: set[tuple] = set()
         timeseries_root = Path(project_root)
