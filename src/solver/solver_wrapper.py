@@ -114,12 +114,14 @@ class ProppantSolver:
         self.x = np.linspace(0, Lx, nx, endpoint=False) + Lx / nx / 2
         self.y = np.linspace(0, Ly, ny, endpoint=False) + Ly / ny / 2
 
-        # Inlet profile: small slit in upper-center region (right side of center)
+        # Inlet profile: slit in center region
         # chi is the width of the inlet slit
         chi = Ly * inlet_fraction  # inlet width
         y = self.y
         inlet_center = Ly * float(inlet_position)
-        q_in = Q_inlet / chi * np.where(np.abs(y - inlet_center) < chi/2, 1.0, 0.0)
+        # Note: Q_inlet is negative by convention, so we negate it to get positive inflow
+        # This matches generation.py: q_in = -Q_val/chi_val * ...
+        q_in = -Q_inlet / chi * np.where(np.abs(y - inlet_center) < chi/2, 1.0, 0.0)
         q_out = -np.mean(q_in)
 
         # Configuration
