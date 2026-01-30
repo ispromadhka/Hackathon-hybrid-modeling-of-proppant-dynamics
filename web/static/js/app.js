@@ -1,13 +1,13 @@
-// Proppant Transport Simulator - Frontend JS
+// Симулятор транспорта пропанта - Frontend JS
 
-// State
+// Состояние
 let simulationData = null;
 let isPlaying = false;
 let playInterval = null;
 let currentFrame = 0;
 let totalFrames = 0;
 
-// DOM Elements
+// DOM элементы
 const themeToggle = document.getElementById('theme-toggle');
 const runBtn = document.getElementById('run-btn');
 const playBtn = document.getElementById('play-btn');
@@ -17,7 +17,7 @@ const timeMax = document.getElementById('time-max');
 const playbackSpeed = document.getElementById('playback-speed');
 const statusMessage = document.getElementById('status-message');
 
-// Parameter inputs
+// Поля ввода параметров
 const params = {
     c_in: document.getElementById('c_in'),
     w0: document.getElementById('w0'),
@@ -27,7 +27,7 @@ const params = {
     c_in_times: document.getElementById('c_in_times')
 };
 
-// Metrics elements
+// Элементы метрик
 const metrics = {
     nnTime: document.getElementById('nn-time'),
     nsTime: document.getElementById('ns-time'),
@@ -35,7 +35,7 @@ const metrics = {
     l2Error: document.getElementById('l2-error')
 };
 
-// Theme handling
+// Управление темой
 function initTheme() {
     const saved = localStorage.getItem('theme');
     if (saved === 'light') {
@@ -67,25 +67,25 @@ function toggleTheme() {
 
 themeToggle.addEventListener('click', toggleTheme);
 
-// Plotly configuration
+// Конфигурация Plotly
 function getPlotlyLayout(title) {
     const isDark = document.body.classList.contains('dark-theme');
     return {
         title: null,
         margin: { l: 50, r: 80, t: 10, b: 40 },
         xaxis: {
-            title: 'x (m)',
+            title: 'x (м)',
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
             zerolinecolor: isDark ? '#3d4450' : '#dce1e7'
         },
         yaxis: {
-            title: 'y (m)',
+            title: 'y (м)',
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
             zerolinecolor: isDark ? '#3d4450' : '#dce1e7',
             scaleanchor: 'x',
-            scaleratio: 0.5
+            scaleratio: 1.0
         },
         paper_bgcolor: isDark ? '#242830' : '#ffffff',
         plot_bgcolor: isDark ? '#2d323c' : '#f8f9fa',
@@ -105,7 +105,7 @@ function getColorscale() {
     ];
 }
 
-// Initialize empty plots
+// Инициализация пустых графиков
 function initEmptyPlots() {
     const layout = getPlotlyLayout();
     const config = {
@@ -132,7 +132,7 @@ function initEmptyPlots() {
     Plotly.newPlot('ns-plot', emptyData, layout, config);
 }
 
-// Render a specific frame
+// Отрисовка кадра
 function renderFrame(frameIdx) {
     if (!simulationData) return;
 
@@ -157,7 +157,7 @@ function renderFrame(frameIdx) {
             thickness: 15,
             len: 0.9
         },
-        hovertemplate: 'x: %{x:.2f} m<br>y: %{y:.2f} m<br>c: %{z:.4f}<extra></extra>'
+        hovertemplate: 'x: %{x:.2f} м<br>y: %{y:.2f} м<br>c: %{z:.4f}<extra></extra>'
     }];
 
     const nsData = [{
@@ -175,7 +175,7 @@ function renderFrame(frameIdx) {
             thickness: 15,
             len: 0.9
         },
-        hovertemplate: 'x: %{x:.2f} m<br>y: %{y:.2f} m<br>c: %{z:.4f}<extra></extra>'
+        hovertemplate: 'x: %{x:.2f} м<br>y: %{y:.2f} м<br>c: %{z:.4f}<extra></extra>'
     }];
 
     const config = {
@@ -189,11 +189,11 @@ function renderFrame(frameIdx) {
     Plotly.react('ns-plot', nsData, layout, config);
 
     const t = times[frameIdx];
-    timeCurrent.textContent = `${t.toFixed(1)} s`;
+    timeCurrent.textContent = `${t.toFixed(1)} с`;
     timeSlider.value = frameIdx;
 }
 
-// Run simulation
+// Запуск симуляции
 async function runSimulation() {
     runBtn.classList.add('loading');
     runBtn.disabled = true;
@@ -218,7 +218,7 @@ async function runSimulation() {
 
         if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.detail || 'Simulation failed');
+            throw new Error(err.detail || 'Ошибка симуляции');
         }
 
         const data = await response.json();
@@ -228,18 +228,18 @@ async function runSimulation() {
         timeSlider.max = totalFrames - 1;
         timeSlider.value = 0;
         currentFrame = 0;
-        timeMax.textContent = `${data.times[totalFrames - 1].toFixed(1)} s`;
+        timeMax.textContent = `${data.times[totalFrames - 1].toFixed(1)} с`;
 
         if (data.nn_available) {
-            metrics.nnTime.textContent = `${data.nn_time.toFixed(3)} s`;
+            metrics.nnTime.textContent = `${data.nn_time.toFixed(3)} с`;
             metrics.speedup.textContent = `${data.speedup.toFixed(1)}x`;
             metrics.l2Error.textContent = `${(data.l2_error * 100).toFixed(2)}%`;
         } else {
-            metrics.nnTime.textContent = 'N/A';
-            metrics.speedup.textContent = 'N/A';
-            metrics.l2Error.textContent = 'N/A';
+            metrics.nnTime.textContent = 'Н/Д';
+            metrics.speedup.textContent = 'Н/Д';
+            metrics.l2Error.textContent = 'Н/Д';
         }
-        metrics.nsTime.textContent = `${data.ns_time.toFixed(2)} s`;
+        metrics.nsTime.textContent = `${data.ns_time.toFixed(2)} с`;
 
         renderFrame(0);
 
@@ -247,15 +247,15 @@ async function runSimulation() {
             statusMessage.textContent = `${data.model_warning}`;
             statusMessage.className = 'status-message warning';
         } else if (data.nn_available) {
-            statusMessage.textContent = 'Simulation completed successfully!';
+            statusMessage.textContent = 'Симуляция завершена успешно!';
             statusMessage.className = 'status-message success';
         } else {
-            statusMessage.textContent = 'Simulation completed (NS only - NN model not loaded)';
+            statusMessage.textContent = 'Симуляция завершена (только ЧМ — модель НС не загружена)';
             statusMessage.className = 'status-message warning';
         }
 
     } catch (error) {
-        console.error('Simulation error:', error);
+        console.error('Ошибка симуляции:', error);
         statusMessage.textContent = error.message;
         statusMessage.className = 'status-message error';
     } finally {
@@ -266,7 +266,7 @@ async function runSimulation() {
 
 runBtn.addEventListener('click', runSimulation);
 
-// Timelapse controls
+// Управление таймлапсом
 function togglePlay() {
     if (isPlaying) {
         stopPlayback();
@@ -317,7 +317,7 @@ playbackSpeed.addEventListener('change', () => {
     }
 });
 
-// Keyboard shortcuts
+// Горячие клавиши
 document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT') return;
 
@@ -345,6 +345,6 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// Initialize
+// Инициализация
 initTheme();
 initEmptyPlots();

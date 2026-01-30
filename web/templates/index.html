@@ -1,16 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Proppant Transport Simulator</title>
+    <title>Симулятор транспорта пропанта</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body class="dark-theme">
     <header>
-        <h1>Proppant Transport Simulator</h1>
-        <button class="theme-btn" id="theme-toggle" title="Toggle theme">
+        <h1>Симулятор транспорта пропанта</h1>
+        <button class="theme-btn" id="theme-toggle" title="Сменить тему">
             <span class="icon-sun">&#9728;</span>
             <span class="icon-moon">&#9790;</span>
         </button>
@@ -18,61 +18,61 @@
 
     <main>
         <aside class="parameters-panel">
-            <h2>Parameters</h2>
+            <h2>Параметры</h2>
 
             <div class="param-group">
-                <label for="c_in">Inlet Concentration:</label>
+                <label for="c_in">Концентрация на входе:</label>
                 <input type="number" id="c_in" value="0.3" step="0.01" min="0.05" max="0.45">
             </div>
 
             <div class="param-group">
-                <label for="w0">Fracture Aperture (m):</label>
+                <label for="w0">Раскрытие трещины (м):</label>
                 <input type="number" id="w0" value="0.015" step="0.005" min="0.01" max="0.03">
             </div>
 
             <div class="param-group">
-                <label for="mu0">Viscosity (Pa-s):</label>
+                <label for="mu0">Вязкость (Па·с):</label>
                 <input type="number" id="mu0" value="0.001" step="0.001" min="0.001" max="0.02">
             </div>
 
             <div class="param-group">
-                <label for="Q">Flow Rate (m²/s):</label>
+                <label for="Q">Расход (м²/с):</label>
                 <input type="number" id="Q" value="0.05" step="0.01" min="0.01" max="0.2">
             </div>
 
             <div class="param-group">
-                <label for="chi">Inlet Width (m):</label>
+                <label for="chi">Ширина входа (м):</label>
                 <input type="number" id="chi" value="20.0" step="1.0" min="15.0" max="30.0">
             </div>
 
             <div class="param-group">
-                <label for="c_in_times">Injection Time (s):</label>
+                <label for="c_in_times">Время закачки (с):</label>
                 <input type="number" id="c_in_times" value="100" step="10" min="50" max="200">
             </div>
 
             <button class="run-btn" id="run-btn">
-                <span class="btn-text">RUN SIMULATION</span>
+                <span class="btn-text">ЗАПУСТИТЬ</span>
                 <span class="btn-loader"></span>
             </button>
 
             <div class="status-message" id="status-message"></div>
 
             <div class="metrics-panel">
-                <h3>Metrics</h3>
+                <h3>Метрики</h3>
                 <div class="metric">
-                    <span class="metric-label">NN Time:</span>
+                    <span class="metric-label">Время НС:</span>
                     <span class="metric-value" id="nn-time">-</span>
                 </div>
                 <div class="metric">
-                    <span class="metric-label">NS Time:</span>
+                    <span class="metric-label">Время ЧМ:</span>
                     <span class="metric-value" id="ns-time">-</span>
                 </div>
                 <div class="metric">
-                    <span class="metric-label">Speedup:</span>
+                    <span class="metric-label">Ускорение:</span>
                     <span class="metric-value" id="speedup">-</span>
                 </div>
                 <div class="metric">
-                    <span class="metric-label">L2 Error:</span>
+                    <span class="metric-label">Ошибка L2:</span>
                     <span class="metric-value" id="l2-error">-</span>
                 </div>
             </div>
@@ -80,27 +80,27 @@
 
         <section class="visualization-area">
             <div class="plot-container">
-                <h3>Neural Network Model</h3>
+                <h3>Нейросетевая модель (НС)</h3>
                 <div class="plot" id="nn-plot"></div>
             </div>
 
             <div class="plot-container">
-                <h3>Numerical Solver (NS)</h3>
+                <h3>Численный метод (ЧМ)</h3>
                 <div class="plot" id="ns-plot"></div>
             </div>
 
             <div class="timelapse-controls">
-                <button class="control-btn" id="play-btn" title="Play/Pause (Space)">
+                <button class="control-btn" id="play-btn" title="Воспроизведение (Пробел)">
                     <span class="play-icon">&#9658;</span>
                     <span class="pause-icon">&#10074;&#10074;</span>
                 </button>
-                <span class="time-label" id="time-current">0.0 s</span>
+                <span class="time-label" id="time-current">0,0 с</span>
                 <input type="range" id="time-slider" min="0" max="100" value="0">
-                <span class="time-label" id="time-max">0.0 s</span>
+                <span class="time-label" id="time-max">0,0 с</span>
                 <div class="speed-control">
-                    <label for="playback-speed">Speed:</label>
+                    <label for="playback-speed">Скорость:</label>
                     <select id="playback-speed">
-                        <option value="0.5">0.5x</option>
+                        <option value="0.5">0,5x</option>
                         <option value="1" selected>1x</option>
                         <option value="2">2x</option>
                         <option value="4">4x</option>

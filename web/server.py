@@ -57,8 +57,8 @@ def load_model():
     MODEL_WARNING = None
 
     if not CHECKPOINT_PATH.exists():
-        MODEL_WARNING = f"No checkpoint found at {CHECKPOINT_PATH}"
-        print(f"Warning: {MODEL_WARNING}")
+        MODEL_WARNING = f"Файл весов НС не найден: {CHECKPOINT_PATH}. Требуется обучение модели."
+        print(f"Предупреждение: {MODEL_WARNING}")
         return False
 
     # Load metadata
@@ -84,8 +84,8 @@ def load_model():
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
     except Exception as e:
-        MODEL_WARNING = f"Failed to load checkpoint: {e}"
-        print(f"Warning: {MODEL_WARNING}")
+        MODEL_WARNING = f"Ошибка загрузки checkpoint: {e}"
+        print(f"Предупреждение: {MODEL_WARNING}")
         return False
 
     # Detect model dimensions from checkpoint
@@ -118,7 +118,7 @@ def load_model():
     if n_times is None:
         n_times = MODEL_META.get('n_times', 201)
 
-    print(f"Creating model: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
+    print(f"Создание модели НС: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
     MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=DEVICE)
 
     # Load state dict directly (old model uses complex weights which is fine)
@@ -129,23 +129,23 @@ def load_model():
         missing_ratio = len(missing) / total_params if total_params > 0 else 1.0
 
         if missing_ratio > 0.3:
-            MODEL_WARNING = f"Architecture mismatch: {len(missing)}/{total_params} weights missing"
-            print(f"WARNING: {MODEL_WARNING}")
+            MODEL_WARNING = f"Несовместимость архитектуры НС: {len(missing)}/{total_params} весов не загружено. Требуется переобучение модели."
+            print(f"ВНИМАНИЕ: {MODEL_WARNING}")
             MODEL_VALID = False
         elif missing:
-            MODEL_WARNING = f"Partial load: {len(missing)} weights missing"
-            print(f"Warning: {MODEL_WARNING}")
+            MODEL_WARNING = f"Частичная загрузка НС: {len(missing)} весов отсутствует"
+            print(f"Предупреждение: {MODEL_WARNING}")
             MODEL_VALID = True
         else:
             MODEL_VALID = True
-            print(f"Model loaded successfully - all weights matched")
+            print(f"Модель НС загружена успешно — все веса совпали")
 
         if unexpected:
-            print(f"Note: {len(unexpected)} unexpected keys ignored")
+            print(f"Примечание: {len(unexpected)} лишних ключей проигнорировано")
 
     except Exception as e:
-        MODEL_WARNING = f"Failed to load weights: {e}"
-        print(f"Warning: {MODEL_WARNING}")
+        MODEL_WARNING = f"Ошибка загрузки весов НС: {e}"
+        print(f"Предупреждение: {MODEL_WARNING}")
         MODEL_VALID = False
 
     MODEL.eval()
