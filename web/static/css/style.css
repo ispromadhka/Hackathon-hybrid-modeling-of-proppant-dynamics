@@ -276,47 +276,31 @@ main {
 
 .plot-container {
     flex: 1;
-    min-width: 250px;
+    min-width: 400px;
     background-color: var(--bg-secondary);
     border-radius: 8px;
     border: 1px solid var(--border-color);
-    padding: 12px;
+    padding: 16px;
     box-shadow: var(--shadow);
     display: flex;
     flex-direction: column;
 }
 
 .plot-container h3 {
-    font-size: 0.9rem;
+    font-size: 1rem;
     font-weight: 500;
     color: var(--text-secondary);
-    margin-bottom: 8px;
+    margin-bottom: 12px;
     text-align: center;
 }
 
 .plot {
     flex: 1;
     width: 100%;
-    min-height: 280px;
+    min-height: 400px;
     aspect-ratio: 1 / 1;
     background-color: var(--bg-tertiary);
     border-radius: 4px;
-}
-
-/* Error plot row - wide horizontal layout */
-.error-row {
-    width: 100%;
-    flex-shrink: 0;
-}
-
-.error-container {
-    width: 100%;
-    min-width: 100%;
-}
-
-.error-plot {
-    aspect-ratio: 2 / 1;
-    min-height: 200px;
 }
 
 /* Timelapse controls */
@@ -414,17 +398,7 @@ main {
 }
 
 /* Responsive */
-@media (max-width: 1400px) {
-    .plots-row {
-        flex-wrap: wrap;
-    }
-
-    .plot-container {
-        min-width: 45%;
-    }
-}
-
-@media (max-width: 1000px) {
+@media (max-width: 1200px) {
     .plots-row {
         flex-direction: column;
     }
@@ -434,7 +408,7 @@ main {
     }
 
     .plot {
-        min-height: 280px;
+        min-height: 350px;
     }
 }
 
