@@ -99,7 +99,7 @@ class GaussianSmooth(nn.Module):
         kernel_1d = g / g.sum()
         kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
         kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
-        kernel_2d = kernel_2d.expand(channels, 1, -1, -1)
+        kernel_2d = kernel_2d.repeat(channels, 1, 1, 1)  # repeat creates real copies (not shared memory view)
 
         self.register_buffer('kernel', kernel_2d)
         self.padding = kernel_size // 2
