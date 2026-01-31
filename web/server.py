@@ -7,13 +7,19 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
+from io import BytesIO
 
 import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
+from PIL import Image
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -24,7 +30,11 @@ from src.solver.solver_wrapper import ProppantSolver
 # Paths
 ROOT = Path(__file__).parent.parent
 WEB_DIR = Path(__file__).parent
-CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
+CHECKPOINT_DIR = ROOT / 'checkpoints'
+# Try adaptive first, then classic
+CHECKPOINT_PATH_ADAPTIVE = CHECKPOINT_DIR / 'adaptive' / 'best.pt'
+CHECKPOINT_PATH_CLASSIC = CHECKPOINT_DIR / 'classic' / 'best.pt'
+CHECKPOINT_PATH = CHECKPOINT_PATH_ADAPTIVE if CHECKPOINT_PATH_ADAPTIVE.exists() else CHECKPOINT_PATH_CLASSIC
 DATA_META_PATH = ROOT / 'data' / 'processed' / 'metadata.json'
 
 # Global model state
@@ -56,8 +66,37 @@ def load_model():
     MODEL_VALID = False
     MODEL_WARNING = None
 
-    if not CHECKPOINT_PATH.exists():
-        MODEL_WARNING = f"Файл весов НС не найден: {CHECKPOINT_PATH}. Требуется обучение модели."
+    # Try to find checkpoint in adaptive or classic subdirectories
+    checkpoint_path = None
+    smoothing_type = None
+
+    # Try adaptive first
+    if CHECKPOINT_PATH_ADAPTIVE.exists():
+        checkpoint_path = CHECKPOINT_PATH_ADAPTIVE
+        smoothing_type = 'adaptive'
+    elif (CHECKPOINT_DIR / 'adaptive' / 'last.pt').exists():
+        checkpoint_path = CHECKPOINT_DIR / 'adaptive' / 'last.pt'
+        smoothing_type = 'adaptive'
+        print(f"best.pt не найден в adaptive/, используем last.pt")
+    # Try classic
+    elif CHECKPOINT_PATH_CLASSIC.exists():
+        checkpoint_path = CHECKPOINT_PATH_CLASSIC
+        smoothing_type = 'classic'
+    elif (CHECKPOINT_DIR / 'classic' / 'last.pt').exists():
+        checkpoint_path = CHECKPOINT_DIR / 'classic' / 'last.pt'
+        smoothing_type = 'classic'
+        print(f"best.pt не найден в classic/, используем last.pt")
+    # Fallback to old location (root checkpoints/)
+    elif (CHECKPOINT_DIR / 'best.pt').exists():
+        checkpoint_path = CHECKPOINT_DIR / 'best.pt'
+        smoothing_type = 'classic'  # Assume classic for old checkpoints
+        print(f"Используется старый формат чекпоинта из корня checkpoints/")
+    elif (CHECKPOINT_DIR / 'last.pt').exists():
+        checkpoint_path = CHECKPOINT_DIR / 'last.pt'
+        smoothing_type = 'classic'
+        print(f"Используется старый формат чекпоинта из корня checkpoints/")
+    else:
+        MODEL_WARNING = f"Чекпоинт не найден в {CHECKPOINT_DIR}/adaptive/ или {CHECKPOINT_DIR}/classic/"
         print(f"Предупреждение: {MODEL_WARNING}")
         return False
 
@@ -82,8 +121,11 @@ def load_model():
         }
 
     try:
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        checkpoint = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
+        if 'base_model_state_dict' in checkpoint:
+            state_dict = checkpoint['base_model_state_dict']
+        else:
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
     except Exception as e:
         MODEL_WARNING = f"Ошибка загрузки checkpoint: {e}"
         print(f"Предупреждение: {MODEL_WARNING}")
@@ -104,27 +146,52 @@ def load_model():
     else:
         n_params = len(MODEL_META.get('param_names', []))
 
-    # Detect n_times from project layer
     n_times = None
-    for key in ['project.6.weight', 'project.6.bias', 'project.4.weight', 'project.2.weight']:
-        if key in state_dict:
-            shape = state_dict[key].shape
-            if 'bias' in key:
-                n_times = shape[0]
-            elif 'weight' in key and len(shape) == 4:
-                n_times = shape[0]
-            if n_times:
-                break
-
-    if n_times is None:
+    if 'project.6.weight' in state_dict:
+        n_times = state_dict['project.6.weight'].shape[0]
+    elif 'project.5.weight' in state_dict:
+        n_times = state_dict['project.5.weight'].shape[0]
+    elif 'project.2.weight' in state_dict:
+        n_times = state_dict['project.2.weight'].shape[0]
+    elif 'spatial_smooth.kernel' in state_dict:
+        n_times = state_dict['spatial_smooth.kernel'].shape[0]
+    else:
         n_times = MODEL_META.get('n_times', 201)
 
     print(f"Создание модели НС: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
-    MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=DEVICE)
 
-    # Load state dict directly (old model uses complex weights which is fine)
+    # Detect if checkpoint uses adaptive smoothing
+    # First check by directory, then by state_dict keys
+    if smoothing_type:
+        use_adaptive = (smoothing_type == 'adaptive')
+    else:
+        has_adaptive = 'adaptive_temporal_smooth.kernel' in state_dict
+        has_old_smoothing = 'spatial_smooth.kernel' in state_dict or any('lowpass' in k for k in state_dict.keys())
+        use_adaptive = has_adaptive and not has_old_smoothing
+
+    if use_adaptive:
+        print("Используется адаптивное временное сглаживание")
+    else:
+        print("Используется классическое сглаживание (lowpass + spatial + temporal)")
+
+    MODEL = create_model(
+        nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=DEVICE,
+        model_cfg={'use_error_corrector': False, 'use_adaptive_smoothing': use_adaptive}
+    )
+
+    # Filter incompatible weights
+    filtered_state_dict = {}
+    for k, v in state_dict.items():
+        if 'error_corrector' in k:
+            continue
+        if use_adaptive and ('spatial_smooth' in k or 'temporal_smooth' in k or 'lowpass' in k):
+            continue
+        if not use_adaptive and 'adaptive_temporal_smooth' in k:
+            continue
+        filtered_state_dict[k] = v
+
     try:
-        missing, unexpected = MODEL.load_state_dict(state_dict, strict=False)
+        missing, unexpected = MODEL.load_state_dict(filtered_state_dict, strict=False)
 
         total_params = len(list(MODEL.state_dict().keys()))
         missing_ratio = len(missing) / total_params if total_params > 0 else 1.0
@@ -279,15 +346,16 @@ async def simulate(params: SimulationParams):
     if ns_result is None:
         raise HTTPException(status_code=500, detail="Solver failed")
 
-    # Match frame counts
-    n_frames = ns_result.shape[0]
-    if nn_result is not None:
-        nn_frames = nn_result.shape[0]
-        if nn_frames != n_frames:
-            from scipy.ndimage import zoom
-            zoom_factor = (n_frames / nn_frames, 1, 1)
-            nn_result = zoom(nn_result, zoom_factor, order=1)
-            nn_result = np.clip(nn_result, 0, cmax)
+    # Match frame counts and spatial dimensions
+    if nn_result is not None and nn_result.shape != ns_result.shape:
+        from scipy.ndimage import zoom
+        zoom_factor = (
+            ns_result.shape[0] / nn_result.shape[0],
+            ns_result.shape[1] / nn_result.shape[1],
+            ns_result.shape[2] / nn_result.shape[2]
+        )
+        nn_result = zoom(nn_result, zoom_factor, order=1)
+        nn_result = np.clip(nn_result, 0, cmax)
 
     # Compute metrics
     mae = 0.0       # Mean Absolute Error
@@ -296,6 +364,16 @@ async def simulate(params: SimulationParams):
     l2_error = 0.0  # Relative L2 error
 
     if nn_result is not None and nn_available:
+        if nn_result.shape != ns_result.shape:
+            from scipy.ndimage import zoom
+            zoom_factor = (
+                ns_result.shape[0] / nn_result.shape[0],
+                ns_result.shape[1] / nn_result.shape[1],
+                ns_result.shape[2] / nn_result.shape[2]
+            )
+            nn_result = zoom(nn_result, zoom_factor, order=1)
+            nn_result = np.clip(nn_result, 0, cmax)
+
         diff = nn_result - ns_result
 
         # MAE - средняя абсолютная ошибка
@@ -371,6 +449,203 @@ async def simulate(params: SimulationParams):
         "nn_available": nn_available,
         "model_warning": MODEL_WARNING,
     }
+
+
+def create_gif_from_data(data: np.ndarray, x_grid: list, y_grid: list, c_max: float, fps: int = 10) -> bytes:
+    """Create GIF from simulation data."""
+    frames = []
+    ny, nx = len(y_grid), len(x_grid)
+    X, Y = np.meshgrid(np.array(x_grid), np.array(y_grid))
+
+    for frame_idx in range(data.shape[0]):
+        frame = data[frame_idx]
+
+        fig, ax = plt.subplots(figsize=(10, 8), dpi=80)
+        im = ax.contourf(
+            X, Y,
+            np.clip(frame, 0, c_max),
+            levels=60,
+            cmap='turbo',
+            vmin=0,
+            vmax=c_max
+        )
+        ax.set_xlabel('x (м)', fontsize=12)
+        ax.set_ylabel('y (м)', fontsize=12)
+        ax.set_aspect('equal')
+        plt.colorbar(im, ax=ax, label='c', fraction=0.046)
+
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=80, facecolor='white')
+        buf.seek(0)
+        frames.append(Image.open(buf))
+        plt.close(fig)
+
+    gif_buf = BytesIO()
+    if frames:
+        frames[0].save(
+            gif_buf,
+            format='GIF',
+            save_all=True,
+            append_images=frames[1:],
+            duration=1000//fps,
+            loop=0,
+            optimize=False
+        )
+    gif_buf.seek(0)
+    return gif_buf.getvalue()
+
+
+@app.post("/api/download/gif")
+async def download_gif(params: SimulationParams):
+    """Generate and download GIF from simulation."""
+    dT = MODEL_META.get('dT', 2.0) if MODEL_META else 2.0
+    Tmax = MODEL_META.get('Tmax', 400.0) if MODEL_META else 400.0
+    cmax = MODEL_META.get('cmax', 0.635) if MODEL_META else 0.635
+    Lx = MODEL_META.get('L', 60.0) if MODEL_META else 60.0
+    Ly = MODEL_META.get('H', 60.0) if MODEL_META else 60.0
+    nx = MODEL_META.get('nx', 100) if MODEL_META else 100
+    ny = MODEL_META.get('ny', 100) if MODEL_META else 100
+
+    Q_internal = -abs(params.Q)
+    raw_params = np.array([
+        params.c_in, params.w0, params.mu0, Q_internal,
+        params.chi, params.c_in_times, dT
+    ], dtype=np.float32)
+
+    nn_result = None
+    if MODEL is not None and MODEL_VALID:
+        try:
+            norm_params = normalize_params(raw_params)
+            inp = torch.from_numpy(norm_params.reshape(1, -1)).to(DEVICE).float()
+            with torch.no_grad():
+                pred = MODEL(inp)[0].cpu().numpy()
+            pred = pred.transpose(0, 2, 1)
+            nn_result = pred * cmax
+        except Exception as e:
+            print(f"NN prediction error: {e}")
+
+    try:
+        c_in_times_arr = np.array([params.c_in_times])
+        c_in_arr = np.array([params.c_in, 0.0])
+        inlet_fraction = min(params.chi / Ly, 1.0)
+
+        solver = ProppantSolver(
+            nx=nx, ny=ny, Lx=Lx, Ly=Ly, T=Tmax, dT=dT,
+            c_inlet=params.c_in, Q_inlet=Q_internal, g=0.0,
+            mu0=params.mu0, r_particle=0.0, w0=params.w0,
+            inlet_fraction=inlet_fraction,
+            c_in_times=c_in_times_arr, c_in_arr=c_in_arr,
+            rk_stages=3, lim_type='koren',
+        )
+
+        times, concentrations = solver.solve()
+        ns_result = np.clip(concentrations, 0, cmax)
+
+        dx = Lx / nx
+        dy = Ly / ny
+        x_grid = (np.linspace(0, Lx, nx, endpoint=False) + dx/2).tolist()
+        y_grid = (np.linspace(0, Ly, ny, endpoint=False) + dy/2).tolist()
+
+        result_data = nn_result if nn_result is not None else ns_result
+        actual_max = max(float(result_data.max()), float(params.c_in))
+
+        gif_data = create_gif_from_data(result_data, x_grid, y_grid, actual_max, fps=10)
+
+        filename = f"simulation_c{params.c_in}_w{params.w0}_Q{params.Q}.gif"
+        return Response(
+            content=gif_data,
+            media_type="image/gif",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating GIF: {str(e)}")
+
+
+@app.post("/api/download/frame")
+async def download_frame(params: SimulationParams, frame_idx: int = 0):
+    """Generate and download current frame as PNG."""
+    dT = MODEL_META.get('dT', 2.0) if MODEL_META else 2.0
+    Tmax = MODEL_META.get('Tmax', 400.0) if MODEL_META else 400.0
+    cmax = MODEL_META.get('cmax', 0.635) if MODEL_META else 0.635
+    Lx = MODEL_META.get('L', 60.0) if MODEL_META else 60.0
+    Ly = MODEL_META.get('H', 60.0) if MODEL_META else 60.0
+    nx = MODEL_META.get('nx', 100) if MODEL_META else 100
+    ny = MODEL_META.get('ny', 100) if MODEL_META else 100
+
+    Q_internal = -abs(params.Q)
+    raw_params = np.array([
+        params.c_in, params.w0, params.mu0, Q_internal,
+        params.chi, params.c_in_times, dT
+    ], dtype=np.float32)
+
+    nn_result = None
+    if MODEL is not None and MODEL_VALID:
+        try:
+            norm_params = normalize_params(raw_params)
+            inp = torch.from_numpy(norm_params.reshape(1, -1)).to(DEVICE).float()
+            with torch.no_grad():
+                pred = MODEL(inp)[0].cpu().numpy()
+            pred = pred.transpose(0, 2, 1)
+            nn_result = pred * cmax
+        except Exception as e:
+            print(f"NN prediction error: {e}")
+
+    try:
+        c_in_times_arr = np.array([params.c_in_times])
+        c_in_arr = np.array([params.c_in, 0.0])
+        inlet_fraction = min(params.chi / Ly, 1.0)
+
+        solver = ProppantSolver(
+            nx=nx, ny=ny, Lx=Lx, Ly=Ly, T=Tmax, dT=dT,
+            c_inlet=params.c_in, Q_inlet=Q_internal, g=0.0,
+            mu0=params.mu0, r_particle=0.0, w0=params.w0,
+            inlet_fraction=inlet_fraction,
+            c_in_times=c_in_times_arr, c_in_arr=c_in_arr,
+            rk_stages=3, lim_type='koren',
+        )
+
+        times, concentrations = solver.solve()
+        ns_result = np.clip(concentrations, 0, cmax)
+
+        dx = Lx / nx
+        dy = Ly / ny
+        x_grid = (np.linspace(0, Lx, nx, endpoint=False) + dx/2).tolist()
+        y_grid = (np.linspace(0, Ly, ny, endpoint=False) + dy/2).tolist()
+
+        result_data = nn_result if nn_result is not None else ns_result
+        actual_max = max(float(result_data.max()), float(params.c_in))
+
+        frame_idx = min(max(0, frame_idx), result_data.shape[0] - 1)
+        frame = result_data[frame_idx]
+
+        X, Y = np.meshgrid(np.array(x_grid), np.array(y_grid))
+        fig, ax = plt.subplots(figsize=(10, 8), dpi=150)
+        im = ax.contourf(
+            X, Y,
+            np.clip(frame, 0, actual_max),
+            levels=60,
+            cmap='turbo',
+            vmin=0,
+            vmax=actual_max
+        )
+        ax.set_xlabel('x (м)', fontsize=12)
+        ax.set_ylabel('y (м)', fontsize=12)
+        ax.set_aspect('equal')
+        plt.colorbar(im, ax=ax, label='c', fraction=0.046)
+
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=150, facecolor='white')
+        buf.seek(0)
+        plt.close(fig)
+
+        filename = f"frame_{frame_idx}_c{params.c_in}_w{params.w0}.png"
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/png",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating frame: {str(e)}")
 
 
 @app.get("/api/health")

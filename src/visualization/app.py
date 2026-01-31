@@ -25,7 +25,11 @@ from src.training.dataset import build_processed_from_torch_data
 
 ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = ROOT / 'data' / 'processed'
-CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
+CHECKPOINT_DIR = ROOT / 'checkpoints'
+# Try adaptive first, then classic
+CHECKPOINT_PATH_ADAPTIVE = CHECKPOINT_DIR / 'adaptive' / 'best.pt'
+CHECKPOINT_PATH_CLASSIC = CHECKPOINT_DIR / 'classic' / 'best.pt'
+CHECKPOINT_PATH = CHECKPOINT_PATH_ADAPTIVE if CHECKPOINT_PATH_ADAPTIVE.exists() else CHECKPOINT_PATH_CLASSIC
 CSV_PATH = ROOT / 'simulation_results.csv'
 CONFIG_PATH = ROOT / 'configs' / 'default.json'
 
@@ -58,43 +62,108 @@ def load_sim_index():
 
 def load_model():
     global MODEL
-    if not CHECKPOINT_PATH.exists():
+    try:
+        # Try to find checkpoint in adaptive or classic subdirectories
+        checkpoint_path = None
+        smoothing_type = None
+
+        # Try adaptive first
+        if CHECKPOINT_PATH_ADAPTIVE.exists():
+            checkpoint_path = CHECKPOINT_PATH_ADAPTIVE
+            smoothing_type = 'adaptive'
+        elif (CHECKPOINT_DIR / 'adaptive' / 'last.pt').exists():
+            checkpoint_path = CHECKPOINT_DIR / 'adaptive' / 'last.pt'
+            smoothing_type = 'adaptive'
+            print(f"best.pt не найден в adaptive/, используем last.pt")
+        # Try classic
+        elif CHECKPOINT_PATH_CLASSIC.exists():
+            checkpoint_path = CHECKPOINT_PATH_CLASSIC
+            smoothing_type = 'classic'
+        elif (CHECKPOINT_DIR / 'classic' / 'last.pt').exists():
+            checkpoint_path = CHECKPOINT_DIR / 'classic' / 'last.pt'
+            smoothing_type = 'classic'
+            print(f"best.pt не найден в classic/, используем last.pt")
+        # Fallback to old location (root checkpoints/)
+        elif (CHECKPOINT_DIR / 'best.pt').exists():
+            checkpoint_path = CHECKPOINT_DIR / 'best.pt'
+            smoothing_type = 'classic'
+            print(f"Используется старый формат чекпоинта из корня checkpoints/")
+        elif (CHECKPOINT_DIR / 'last.pt').exists():
+            checkpoint_path = CHECKPOINT_DIR / 'last.pt'
+            smoothing_type = 'classic'
+            print(f"Используется старый формат чекпоинта из корня checkpoints/")
+        else:
+            MODEL = None
+            return
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+        if 'base_model_state_dict' in checkpoint:
+            state_dict = checkpoint['base_model_state_dict']
+        else:
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+
+        if 'grid_x' in state_dict:
+            grid_shape = state_dict['grid_x'].shape
+            nx = grid_shape[2]
+            ny = grid_shape[3]
+        else:
+            nx = int(DATA_META.get('nx', 100)) if DATA_META else 100
+            ny = int(DATA_META.get('ny', 100)) if DATA_META else 100
+
+        if 'lift.0.weight' in state_dict:
+            in_channels = state_dict['lift.0.weight'].shape[1]
+            n_params = in_channels - 2
+        elif 'lift.weight' in state_dict:
+            in_channels = state_dict['lift.weight'].shape[1]
+            n_params = in_channels - 2
+        else:
+            n_params = int(len(DATA_META.get('param_names', []))) if DATA_META else 7
+
+        n_times = None
+        if 'project.6.weight' in state_dict:
+            n_times = state_dict['project.6.weight'].shape[0]
+        elif 'project.5.weight' in state_dict:
+            n_times = state_dict['project.5.weight'].shape[0]
+        elif 'project.2.weight' in state_dict:
+            n_times = state_dict['project.2.weight'].shape[0]
+        elif 'spatial_smooth.kernel' in state_dict:
+            n_times = state_dict['spatial_smooth.kernel'].shape[0]
+        else:
+            n_times = int(DATA_META.get('n_times', 201)) if DATA_META else 201
+
+        # Detect if checkpoint uses adaptive smoothing
+        # First check by directory, then by state_dict keys
+        if smoothing_type:
+            use_adaptive = (smoothing_type == 'adaptive')
+        else:
+            has_adaptive = 'adaptive_temporal_smooth.kernel' in state_dict
+            has_old_smoothing = 'spatial_smooth.kernel' in state_dict or any('lowpass' in k for k in state_dict.keys())
+            use_adaptive = has_adaptive and not has_old_smoothing
+
+        MODEL = create_model(
+            nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device,
+            model_cfg={'use_error_corrector': False, 'use_adaptive_smoothing': use_adaptive}
+        )
+
+        # Filter incompatible weights
+        filtered_state_dict = {}
+        for k, v in state_dict.items():
+            if 'error_corrector' in k:
+                continue
+            if use_adaptive and ('spatial_smooth' in k or 'temporal_smooth' in k or 'lowpass' in k):
+                continue
+            if not use_adaptive and 'adaptive_temporal_smooth' in k:
+                continue
+            filtered_state_dict[k] = v
+
+        MODEL.load_state_dict(filtered_state_dict, strict=False)
+        MODEL.eval()
+    except Exception as e:
+        print(f"Ошибка загрузки модели: {e}")
+        import traceback
+        traceback.print_exc()
         MODEL = None
-        return
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
-    state_dict = checkpoint.get('model_state_dict', checkpoint)
-
-    # Detect grid size from state dict
-    if 'grid_x' in state_dict:
-        grid_shape = state_dict['grid_x'].shape
-        nx = grid_shape[2]
-        ny = grid_shape[3]
-    else:
-        nx = int(DATA_META.get('nx', 100)) if DATA_META else 100
-        ny = int(DATA_META.get('ny', 100)) if DATA_META else 100
-
-    # Detect n_params: SuperB-FNO uses lift.0.weight, old FNO uses lift.weight
-    if 'lift.0.weight' in state_dict:
-        in_channels = state_dict['lift.0.weight'].shape[1]
-        n_params = in_channels - 2
-    elif 'lift.weight' in state_dict:
-        in_channels = state_dict['lift.weight'].shape[1]
-        n_params = in_channels - 2
-    else:
-        n_params = int(len(DATA_META.get('param_names', []))) if DATA_META else 7
-
-    # Detect n_times: SuperB-FNO uses project.5.weight, old uses project.2.weight
-    if 'project.5.weight' in state_dict:
-        n_times = state_dict['project.5.weight'].shape[0]
-    elif 'project.2.weight' in state_dict:
-        n_times = state_dict['project.2.weight'].shape[0]
-    else:
-        n_times = int(DATA_META.get('n_times', 201)) if DATA_META else 201
-
-    MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device)
-    MODEL.load_state_dict(state_dict, strict=False)
-    MODEL.eval()
 
 
 def create_empty_figure(title, message):
@@ -451,6 +520,13 @@ def update_plots(c_in, w0, mu0, Q, chi, c_in_times, time_idx, n_clicks, gif_clic
     conc = Q_series / np.float32(w0)
     conc = np.clip(conc, 0.0, np.float32(CMAX))
 
+    ny_data, nx_data = conc.shape[1], conc.shape[2]
+
+    dx = DOMAIN_LX / nx_data
+    dy = DOMAIN_LY / ny_data
+    x_grid_data = (np.linspace(0, DOMAIN_LX, nx_data, endpoint=False) + dx/2).astype(np.float32)
+    y_grid_data = (np.linspace(0, DOMAIN_LY, ny_data, endpoint=False) + dy/2).astype(np.float32)
+
     tmax_idx = int(conc.shape[0] - 1)
     if time_idx is None:
         time_idx = 0
@@ -462,11 +538,12 @@ def update_plots(c_in, w0, mu0, Q, chi, c_in_times, time_idx, n_clicks, gif_clic
 
     gt_frame = conc[k]
     zmax = float(c_in)
-    fig_gt = create_contour(gt_frame, x_grid, y_grid, f"Solver t={t_series[k]:.2f}", zmax)
+    fig_gt = create_contour(gt_frame, x_grid_data, y_grid_data, f"Solver t={t_series[k]:.2f}", zmax)
 
     pred_full = None
     if MODEL is not None and int(getattr(MODEL, 'n_params', -1)) == 7 and DATA_META is not None:
-        raw = np.array([c_in, w0, mu0, Q, chi, c_in_times, dT_fixed], dtype=np.float32)
+        Q_internal = -abs(Q)
+        raw = np.array([c_in, w0, mu0, Q_internal, chi, c_in_times, dT_fixed], dtype=np.float32)
         p = _norm_params(raw)
         device = next(MODEL.parameters()).device
         inp = torch.from_numpy(p.reshape(1, -1)).to(device).float()
@@ -484,7 +561,7 @@ def update_plots(c_in, w0, mu0, Q, chi, c_in_times, time_idx, n_clicks, gif_clic
         conc_c = conc[:n_common]
         nn_frame = pred[min(k, n_common - 1)]
         zmax_nn = float(c_in)
-        fig_nn = create_contour(nn_frame, x_grid, y_grid, f"NN t={t_series[min(k, n_common - 1)]:.2f}", zmax_nn)
+        fig_nn = create_contour(nn_frame, x_grid_data, y_grid_data, f"NN t={t_series[min(k, n_common - 1)]:.2f}", zmax_nn)
 
     meta_lines.extend([
         html.Hr(style={'margin': '8px 0'}),

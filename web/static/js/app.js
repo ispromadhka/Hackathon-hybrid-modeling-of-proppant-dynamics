@@ -282,6 +282,114 @@ async function runSimulation() {
 
 runBtn.addEventListener('click', runSimulation);
 
+// Download GIF
+const downloadGifBtn = document.getElementById('download-gif-btn');
+
+async function downloadGif() {
+    if (!simulationData) {
+        alert('Сначала запустите симуляцию');
+        return;
+    }
+
+    downloadGifBtn.disabled = true;
+    downloadGifBtn.textContent = 'Генерация GIF...';
+
+    const paramValues = {
+        c_in: parseFloat(params.c_in.value),
+        w0: parseFloat(params.w0.value),
+        mu0: parseFloat(params.mu0.value),
+        Q: parseFloat(params.Q.value),
+        chi: parseFloat(params.chi.value),
+        c_in_times: parseFloat(params.c_in_times.value)
+    };
+
+    try {
+        const response = await fetch('/api/download/gif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(paramValues)
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Ошибка генерации GIF');
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `simulation_${Date.now()}.gif`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (error) {
+        console.error('Ошибка скачивания GIF:', error);
+        alert(`Ошибка: ${error.message}`);
+    } finally {
+        downloadGifBtn.disabled = false;
+        downloadGifBtn.innerHTML = '<span>📥 Скачать GIF</span>';
+    }
+}
+
+downloadGifBtn.addEventListener('click', downloadGif);
+
+// Download current frame
+const downloadFrameBtn = document.getElementById('download-frame-btn');
+
+async function downloadFrame() {
+    if (!simulationData) {
+        alert('Сначала запустите симуляцию');
+        return;
+    }
+
+    downloadFrameBtn.disabled = true;
+    downloadFrameBtn.textContent = 'Генерация...';
+
+    const paramValues = {
+        c_in: parseFloat(params.c_in.value),
+        w0: parseFloat(params.w0.value),
+        mu0: parseFloat(params.mu0.value),
+        Q: parseFloat(params.Q.value),
+        chi: parseFloat(params.chi.value),
+        c_in_times: parseFloat(params.c_in_times.value)
+    };
+
+    try {
+        const response = await fetch(`/api/download/frame?frame_idx=${currentFrame}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(paramValues)
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Ошибка генерации кадра');
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `frame_${currentFrame}_${Date.now()}.png`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (error) {
+        console.error('Ошибка скачивания кадра:', error);
+        alert(`Ошибка: ${error.message}`);
+    } finally {
+        downloadFrameBtn.disabled = false;
+        downloadFrameBtn.innerHTML = '<span>🖼️ Скачать кадр</span>';
+    }
+}
+
+if (downloadFrameBtn) {
+    downloadFrameBtn.addEventListener('click', downloadFrame);
+}
+
 // Управление таймлапсом
 function togglePlay() {
     if (isPlaying) {

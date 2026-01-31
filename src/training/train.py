@@ -4,6 +4,7 @@ Training script for SuperB-FNO proppant model.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from pathlib import Path
@@ -19,37 +20,60 @@ from src.training.dataset import ProppantDataset, create_dataloaders
 
 
 class CombinedLoss(nn.Module):
-    """
-    Combined loss for proppant transport:
-    - MSE for accurate predictions
-    - Relative L2 for scale-invariance
-    - Temporal consistency for smooth evolution
-    """
-
-    def __init__(self, mse_weight: float = 1.0, rel_weight: float = 0.5, temporal_weight: float = 0.1):
+    def __init__(
+        self,
+        mse_weight=1.0,
+        rel_weight=0.5,
+        temporal_weight=0.1,
+        tv_spatial_weight=0.05,
+        tv_temporal_weight=0.01,
+        noise_weight=0.1,
+    ):
         super().__init__()
         self.mse_weight = mse_weight
         self.rel_weight = rel_weight
         self.temporal_weight = temporal_weight
+        self.tv_spatial_weight = tv_spatial_weight
+        self.tv_temporal_weight = tv_temporal_weight
+        self.noise_weight = noise_weight
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        # MSE loss
-        mse_loss = torch.mean((pred - target) ** 2)
+    def tv_spatial(self, x):
+        dx = x[:, :, 1:, :] - x[:, :, :-1, :]
+        dy = x[:, :, :, 1:] - x[:, :, :, :-1]
+        return dx.pow(2).mean() + dy.pow(2).mean()
 
-        # Relative L2 loss (with epsilon for stability)
+    def tv_temporal(self, x):
+        if x.shape[1] <= 1:
+            return torch.tensor(0.0, device=x.device)
+        dt = x[:, 1:] - x[:, :-1]
+        return dt.pow(2).mean()
+
+    def forward(self, pred, target):
+        mse_loss = F.mse_loss(pred, target)
+
         diff_norm = torch.norm(pred - target, p=2)
         target_norm = torch.norm(target, p=2) + 1e-6
         rel_loss = diff_norm / target_norm
 
-        # Temporal consistency: penalize large jumps between frames
+        temporal_loss = torch.tensor(0.0, device=pred.device)
         if pred.shape[1] > 1:
             pred_diff = pred[:, 1:] - pred[:, :-1]
             target_diff = target[:, 1:] - target[:, :-1]
-            temporal_loss = torch.mean((pred_diff - target_diff) ** 2)
-        else:
-            temporal_loss = torch.tensor(0.0, device=pred.device)
+            temporal_loss = F.mse_loss(pred_diff, target_diff)
 
-        total = self.mse_weight * mse_loss + self.rel_weight * rel_loss + self.temporal_weight * temporal_loss
+        tv_s = self.tv_spatial(pred)
+        tv_t = self.tv_temporal(pred)
+
+        noise_loss = F.mse_loss(pred, F.avg_pool2d(pred, 3, padding=1, count_include_pad=False))
+
+        total = (
+            self.mse_weight * mse_loss
+            + self.rel_weight * rel_loss
+            + self.temporal_weight * temporal_loss
+            + self.tv_spatial_weight * tv_s
+            + self.tv_temporal_weight * tv_t
+            + self.noise_weight * noise_loss
+        )
         return total
 
 
@@ -99,6 +123,7 @@ class Trainer:
         scheduler_cfg: dict = None,
         loss_cfg: dict = None,
         trainer_cfg: dict = None,
+        finetuning_cfg: dict = None,
         n_epochs: int = 100,
         checkpoint_dir: Path = None,
         start_epoch: int = 0
@@ -110,19 +135,32 @@ class Trainer:
         self.n_epochs = n_epochs
         self.start_epoch = start_epoch
 
+        finetuning_cfg = finetuning_cfg or {}
+        self.finetuning_enabled = finetuning_cfg.get('enabled', False)
+        self.freeze_base = finetuning_cfg.get('freeze_base', True)
+        self.save_separate = finetuning_cfg.get('save_separate', True)
+
+        if self.finetuning_enabled and self.freeze_base:
+            for name, param in self.model.named_parameters():
+                if 'error_corrector' not in name:
+                    param.requires_grad = False
+
         optimizer_cfg = optimizer_cfg or {}
         opt_type = optimizer_cfg.get('type', 'AdamW').lower()
         lr = optimizer_cfg.get('lr', 1e-3)
+        if self.finetuning_enabled:
+            lr = finetuning_cfg.get('corrector_lr', lr)
         weight_decay = optimizer_cfg.get('weight_decay', 1e-4)
         betas = tuple(optimizer_cfg.get('betas', [0.9, 0.999]))
         eps = optimizer_cfg.get('eps', 1e-8)
 
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
         if opt_type == 'adamw':
-            self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+            self.optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
         elif opt_type == 'adam':
-            self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+            self.optimizer = optim.Adam(trainable_params, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
         else:
-            self.optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+            self.optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
 
         scheduler_cfg = scheduler_cfg or {}
         sched_type = scheduler_cfg.get('type', 'cosine_with_warmup')
@@ -147,7 +185,10 @@ class Trainer:
         self.criterion = CombinedLoss(
             mse_weight=loss_cfg.get('mse_weight', 1.0),
             rel_weight=loss_cfg.get('rel_weight', 0.5),
-            temporal_weight=loss_cfg.get('temporal_weight', 0.1)
+            temporal_weight=loss_cfg.get('temporal_weight', 0.1),
+            tv_spatial_weight=loss_cfg.get('tv_spatial_weight', 0.05),
+            tv_temporal_weight=loss_cfg.get('tv_temporal_weight', 0.01),
+            noise_weight=loss_cfg.get('noise_weight', 0.1)
         )
 
         trainer_cfg = trainer_cfg or {}
@@ -158,6 +199,9 @@ class Trainer:
         self.checkpoint_dir = checkpoint_dir
         if checkpoint_dir:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            # Create subdirectories for different smoothing types
+            (checkpoint_dir / 'classic').mkdir(parents=True, exist_ok=True)
+            (checkpoint_dir / 'adaptive').mkdir(parents=True, exist_ok=True)
 
         self.train_losses = []
         self.val_losses = []
@@ -172,54 +216,79 @@ class Trainer:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        state_dict = checkpoint['model_state_dict']
 
-        # Фильтруем параметры и buffers, которые могут не совпадать из-за разных размеров
+        if self.save_separate and 'base_model_state_dict' in checkpoint:
+            base_state_dict = checkpoint['base_model_state_dict']
+            corrector_state_dict = checkpoint.get('error_corrector_state_dict', {})
+        else:
+            state_dict = checkpoint['model_state_dict']
+            base_state_dict = {k: v for k, v in state_dict.items() if 'error_corrector' not in k}
+            corrector_state_dict = {k: v for k, v in state_dict.items() if 'error_corrector' in k}
+
         model_state = self.model.state_dict()
-        filtered_state_dict = {}
+        filtered_base = {}
+        filtered_corrector = {}
         skipped_keys = []
 
-        for key, value in state_dict.items():
+        # Detect smoothing approach compatibility
+        model_has_adaptive = 'adaptive_temporal_smooth.kernel' in model_state
+        checkpoint_has_adaptive = 'adaptive_temporal_smooth.kernel' in base_state_dict
+        checkpoint_has_old = 'spatial_smooth.kernel' in base_state_dict or 'lowpass' in str(base_state_dict.keys())
+
+        for key, value in base_state_dict.items():
             if key in model_state:
-                # Проверяем совпадение размеров для buffers и параметров
                 if model_state[key].shape != value.shape:
-                    # Пропускаем buffers с несовпадающими размерами (будут пересозданы)
-                    if 'buffer' in key.lower() or key.endswith('.kernel') or 'spatial_smooth' in key:
-                        skipped_keys.append(f"{key} (shape mismatch: {value.shape} vs {model_state[key].shape})")
+                    if 'buffer' in key.lower() or key.endswith('.kernel'):
+                        skipped_keys.append(f"{key} (shape mismatch)")
                         continue
-                    else:
-                        # Для параметров с несовпадающими размерами тоже пропускаем
-                        skipped_keys.append(f"{key} (shape mismatch: {value.shape} vs {model_state[key].shape})")
-                        continue
-                filtered_state_dict[key] = value
+                    skipped_keys.append(f"{key} (shape mismatch)")
+                    continue
+                # Skip incompatible smoothing weights
+                if model_has_adaptive and ('spatial_smooth' in key or 'temporal_smooth' in key or 'lowpass' in key):
+                    skipped_keys.append(f"{key} (incompatible smoothing)")
+                    continue
+                if not model_has_adaptive and 'adaptive_temporal_smooth' in key:
+                    skipped_keys.append(f"{key} (incompatible smoothing)")
+                    continue
+                filtered_base[key] = value
             else:
+                # Skip incompatible smoothing weights even if not in model
+                if model_has_adaptive and ('spatial_smooth' in key or 'temporal_smooth' in key or 'lowpass' in key):
+                    skipped_keys.append(f"{key} (incompatible smoothing)")
+                    continue
+                if not model_has_adaptive and 'adaptive_temporal_smooth' in key:
+                    skipped_keys.append(f"{key} (incompatible smoothing)")
+                    continue
                 skipped_keys.append(f"{key} (not in model)")
 
-        missing_keys = set(model_state.keys()) - set(filtered_state_dict.keys())
-        # Удаляем buffers из missing_keys, так как они будут пересозданы при инициализации
-        missing_keys = {k for k in missing_keys if not (
-            k.endswith('.kernel') or 'spatial_smooth' in k or 'buffer' in k.lower()
-        )}
+        for key, value in corrector_state_dict.items():
+            if key in model_state:
+                if model_state[key].shape != value.shape:
+                    skipped_keys.append(f"{key} (shape mismatch)")
+                    continue
+                filtered_corrector[key] = value
 
+        filtered_state_dict = {**filtered_base, **filtered_corrector}
         self.model.load_state_dict(filtered_state_dict, strict=False)
 
         if skipped_keys:
-            print(f"Warning: Skipped {len(skipped_keys)} keys during checkpoint loading:")
-            for key in skipped_keys[:5]:
-                print(f"  - {key}")
-            if len(skipped_keys) > 5:
-                print(f"  ... and {len(skipped_keys) - 5} more")
+            print(f"Warning: Skipped {len(skipped_keys)} keys during checkpoint loading")
 
-        if missing_keys:
-            print(f"Warning: {len(missing_keys)} model keys not found in checkpoint (will use random initialization)")
+        if 'optimizer_state_dict' in checkpoint:
+            try:
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except:
+                print("Warning: Could not load optimizer state, using fresh optimizer")
 
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.start_epoch = checkpoint.get('epoch', 0)
         self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         self.best_accuracy = checkpoint.get('metrics', {}).get('accuracy', 0.0)
 
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except:
+                print("Warning: Could not load scheduler state, using fresh scheduler")
 
         print(f"Resumed from epoch {self.start_epoch}, best_val_loss={self.best_val_loss:.4e}")
 
@@ -284,27 +353,48 @@ class Trainer:
         if not self.checkpoint_dir:
             return
 
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss,
-            'metrics': metrics,
-        }
+        # Determine subdirectory based on smoothing type
+        smoothing_type = 'adaptive' if self.model.use_adaptive_smoothing else 'classic'
+        save_dir = self.checkpoint_dir / smoothing_type
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.save_separate and self.finetuning_enabled:
+            base_state_dict = {k: v for k, v in self.model.state_dict().items() if 'error_corrector' not in k}
+            corrector_state_dict = {k: v for k, v in self.model.state_dict().items() if 'error_corrector' in k}
+            checkpoint = {
+                'epoch': epoch,
+                'base_model_state_dict': base_state_dict,
+                'error_corrector_state_dict': corrector_state_dict,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_val_loss': self.best_val_loss,
+                'metrics': metrics,
+            }
+        else:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_val_loss': self.best_val_loss,
+                'metrics': metrics,
+            }
 
         if self.scheduler:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
 
-        torch.save(checkpoint, self.checkpoint_dir / 'last.pt')
+        torch.save(checkpoint, save_dir / 'last.pt')
         if is_best:
-            torch.save(checkpoint, self.checkpoint_dir / 'best.pt')
+            torch.save(checkpoint, save_dir / 'best.pt')
 
     def train(self, n_epochs: int = None):
         if n_epochs is None:
             n_epochs = self.n_epochs
 
         print(f"Training on {self.device}")
-        print(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Parameters: {total_params:,} total, {trainable_params:,} trainable")
+        if self.finetuning_enabled:
+            print(f"Finetuning: Only error_corrector is trainable")
         print(f"Scheduler: {self.warmup_epochs} warmup epochs + cosine annealing")
         print(f"Early stopping: patience={self.patience}, min_delta={self.min_delta}")
         print("-" * 100)
@@ -396,8 +486,13 @@ def main(config_path: Path = None, resume_from: Path = None):
     scheduler_cfg = train_cfg.get('scheduler', {})
     loss_cfg = train_cfg.get('loss', {})
     trainer_cfg = train_cfg.get('trainer', {})
+    finetuning_cfg = train_cfg.get('finetuning', {})
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if finetuning_cfg.get('enabled', False):
+        model_cfg = model_cfg.copy()
+        model_cfg['use_error_corrector'] = True
 
     if not (data_dir / 'metadata.json').exists():
         print(f"No data found in {data_dir}")
@@ -432,6 +527,13 @@ def main(config_path: Path = None, resume_from: Path = None):
     lr = optimizer_cfg.get('lr', 1e-3)
     patience = trainer_cfg.get('patience', 8)
 
+    finetuning_enabled = finetuning_cfg.get('enabled', False)
+    if finetuning_enabled:
+        print(f"Finetuning mode: enabled")
+        print(f"  - Freeze base model: {finetuning_cfg.get('freeze_base', True)}")
+        print(f"  - Save separate: {finetuning_cfg.get('save_separate', True)}")
+        print(f"  - Corrector LR: {finetuning_cfg.get('corrector_lr', lr)}")
+
     print(f"Training for {n_epochs} epochs (lr={lr}, patience={patience})...")
     print(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val")
     print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps, {n_params} params")
@@ -445,6 +547,8 @@ def main(config_path: Path = None, resume_from: Path = None):
         model_cfg=model_cfg
     )
 
+    finetuning_cfg = train_cfg.get('finetuning', {})
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -454,6 +558,7 @@ def main(config_path: Path = None, resume_from: Path = None):
         scheduler_cfg=scheduler_cfg,
         loss_cfg=loss_cfg,
         trainer_cfg=trainer_cfg,
+        finetuning_cfg=finetuning_cfg,
         n_epochs=n_epochs,
         checkpoint_dir=checkpoint_dir
     )

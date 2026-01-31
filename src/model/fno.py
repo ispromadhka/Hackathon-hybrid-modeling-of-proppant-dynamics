@@ -98,7 +98,6 @@ class GaussianSmooth(nn.Module):
         g = torch.exp(-coords**2 / (2 * sigma**2))
         kernel_1d = g / g.sum()
         kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
-        # Создаем независимый tensor для каждого канала
         kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0)
         kernel_2d = kernel_2d.repeat(channels, 1, 1, 1)
 
@@ -157,6 +156,81 @@ class TemporalSmooth(nn.Module):
         return x
 
 
+class AdaptiveTemporalSmooth(nn.Module):
+    """Адаптивное временное сглаживание с учетом градиентов."""
+
+    def __init__(self, kernel_size: int = 5, sigma: float = 1.5):
+        super().__init__()
+        coords = torch.arange(kernel_size).float() - kernel_size // 2
+        kernel = torch.exp(-coords**2 / (2 * sigma**2))
+        kernel = kernel / kernel.sum()
+        self.register_buffer('kernel', kernel)
+        self.padding = kernel_size // 2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, H, W = x.shape
+
+        if T <= 1:
+            return x
+
+        x_diff = x[:, 1:] - x[:, :-1]
+        x_diff = F.pad(x_diff, (0, 0, 0, 0, 1, 0), mode='replicate')
+
+        weight = torch.exp(-x_diff.abs() * 5)
+
+        x_reshaped = x.permute(0, 2, 3, 1).reshape(-1, 1, T)
+        kernel = self.kernel.view(1, 1, -1)
+        x_smooth = F.conv1d(x_reshaped, kernel, padding=self.padding)
+
+        x_smooth = x_smooth.reshape(B, H, W, T).permute(0, 3, 1, 2)
+        x = x_smooth * weight + x * (1 - weight)
+
+        return x
+
+
+class HybridErrorCorrector(nn.Module):
+    def __init__(self, n_params: int, n_times: int, nx: int = 100, ny: int = 100):
+        super().__init__()
+        self.n_params = n_params
+        self.n_times = n_times
+        self.nx = nx
+        self.ny = ny
+
+        self.param_embed = nn.Sequential(
+            nn.Linear(n_params, 128),
+            nn.GELU(),
+            nn.Linear(128, n_times),
+        )
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(n_times, n_times, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(n_times, n_times, kernel_size=3, padding=1),
+        )
+
+        self.attn = nn.MultiheadAttention(
+            embed_dim=n_times,
+            num_heads=4,
+            batch_first=True,
+        )
+
+    def forward(self, trajectory: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
+        B, T, H, W = trajectory.shape
+
+        param_embed = self.param_embed(params)
+        param_embed = param_embed.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, H, W)
+
+        x = trajectory + param_embed
+
+        x = self.conv(x)
+
+        x = x.permute(0, 2, 3, 1).reshape(B, H * W, T)
+        x, _ = self.attn(x, x, x)
+        x = x.reshape(B, H, W, T).permute(0, 3, 1, 2)
+
+        return x
+
+
 class SuperBFNO(nn.Module):
     """
     SuperB-FNO с антишумовыми механизмами для предсказания транспорта пропанта.
@@ -179,6 +253,8 @@ class SuperBFNO(nn.Module):
         dropout: float = 0.05,
         modes1: int = 16,
         modes2: int = 16,
+        use_error_corrector: bool = False,
+        use_adaptive_smoothing: bool = False,
     ):
         super().__init__()
         self.nx = nx
@@ -186,6 +262,8 @@ class SuperBFNO(nn.Module):
         self.n_times = n_times
         self.n_params = n_params
         self.width = width
+        self.use_error_corrector = use_error_corrector
+        self.use_adaptive_smoothing = use_adaptive_smoothing
 
         # Input: params + coordinate grids
         in_channels = n_params + 2
@@ -216,8 +294,17 @@ class SuperBFNO(nn.Module):
                 FNOBlock(width, m1, m2, dropout=dropout)
             )
 
-        # Low-pass filter for additional noise suppression
-        self.lowpass = LowPassFilter(cutoff_ratio=0.25)
+        # Post-processing smoothing: choose between old and new approach
+        if use_adaptive_smoothing:
+            self.adaptive_temporal_smooth = AdaptiveTemporalSmooth(kernel_size=5, sigma=1.5)
+            self.lowpass = None
+            self.spatial_smooth = None
+            self.temporal_smooth = None
+        else:
+            self.lowpass = LowPassFilter(cutoff_ratio=0.25)
+            self.spatial_smooth = GaussianSmooth(n_times, kernel_size=3, sigma=0.8)
+            self.temporal_smooth = TemporalSmooth(kernel_size=5, sigma=1.2)
+            self.adaptive_temporal_smooth = None
 
         # Parameter injection
         self.param_inject = nn.Sequential(
@@ -237,9 +324,10 @@ class SuperBFNO(nn.Module):
             nn.Conv2d(width, n_times, 1),
         )
 
-        # Post-processing smoothing
-        self.spatial_smooth = GaussianSmooth(n_times, kernel_size=3, sigma=0.8)
-        self.temporal_smooth = TemporalSmooth(kernel_size=5, sigma=1.2)
+        if use_error_corrector:
+            self.error_corrector = HybridErrorCorrector(n_params, n_times, nx, ny)
+        else:
+            self.error_corrector = None
 
         # Coordinate grids
         x = torch.linspace(0, 1, nx)
@@ -275,21 +363,36 @@ class SuperBFNO(nn.Module):
         for layer in self.fno_layers:
             x = layer(x)
 
-        # Apply low-pass filter
-        x = self.lowpass(x)
+        # Post-processing smoothing: choose between old and new approach
+        if self.use_adaptive_smoothing:
+            # Parameter conditioning
+            param_embed = self.param_inject(params)
+            x = x + param_embed.unsqueeze(-1).unsqueeze(-1)
 
-        # Parameter conditioning
-        param_embed = self.param_inject(params)
-        x = x + param_embed.unsqueeze(-1).unsqueeze(-1)
+            # Project to trajectory
+            trajectory = self.project(x)
 
-        # Project to trajectory
-        trajectory = self.project(x)
+            # Apply adaptive temporal smoothing
+            trajectory = self.adaptive_temporal_smooth(trajectory)
+        else:
+            # Apply low-pass filter to hidden representation
+            x = self.lowpass(x)
 
-        # Spatial smoothing
-        trajectory = self.spatial_smooth(trajectory)
+            # Parameter conditioning
+            param_embed = self.param_inject(params)
+            x = x + param_embed.unsqueeze(-1).unsqueeze(-1)
 
-        # Temporal smoothing for smooth time evolution
-        trajectory = self.temporal_smooth(trajectory)
+            # Project to trajectory
+            trajectory = self.project(x)
+
+            # Spatial smoothing
+            trajectory = self.spatial_smooth(trajectory)
+
+            # Temporal smoothing for smooth time evolution
+            trajectory = self.temporal_smooth(trajectory)
+
+        if self.error_corrector is not None:
+            trajectory = self.error_corrector(trajectory, params)
 
         # Smooth clamp using sigmoid-based soft clipping
         # This avoids hard edges from torch.clamp
@@ -320,6 +423,8 @@ def create_model(
         dropout=model_cfg.get('dropout', 0.05),
         modes1=model_cfg.get('modes1', 16),
         modes2=model_cfg.get('modes2', 16),
+        use_error_corrector=model_cfg.get('use_error_corrector', False),
+        use_adaptive_smoothing=model_cfg.get('use_adaptive_smoothing', False),
     )
     return model.to(device)
 

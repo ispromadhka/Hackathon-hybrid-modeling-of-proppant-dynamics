@@ -72,6 +72,8 @@ All training and model parameters are configured in `configs/default.json`. The 
 - `width` — Number of channels in the model
 - `n_layers` — Number of FNO layers
 - `dropout` — Dropout rate
+- `use_error_corrector` — Enable HybridErrorCorrector for finetuning
+- `use_adaptive_smoothing` — Use adaptive temporal smoothing instead of classic (lowpass + spatial + temporal)
 
 **Training parameters** (`training` section):
 
@@ -82,7 +84,9 @@ All training and model parameters are configured in `configs/default.json`. The 
     "modes2": 16,
     "width": 64,
     "n_layers": 4,
-    "dropout": 0.05
+    "dropout": 0.05,
+    "use_error_corrector": false,
+    "use_adaptive_smoothing": false
   },
   "training": {
     "n_epochs": 100,
@@ -134,6 +138,9 @@ All training and model parameters are configured in `configs/default.json`. The 
 - `mse_weight`: Mean squared error weight
 - `rel_weight`: Relative L2 error weight
 - `temporal_weight`: Temporal consistency weight
+- `tv_spatial_weight`: Total Variation spatial regularization weight
+- `tv_temporal_weight`: Total Variation temporal regularization weight
+- `noise_weight`: Noise suppression loss weight
 
 **Trainer settings:**
 - `patience`: Early stopping patience (epochs without improvement)
@@ -164,11 +171,19 @@ python app.py --train --resume models/best.pt
 }
 ```
 
-Checkpoints are saved in `checkpoints/` directory:
-- `checkpoints/last.pt` — Latest checkpoint
-- `checkpoints/best.pt` — Best validation loss checkpoint
+Checkpoints are saved in separate subdirectories based on smoothing type:
+- `checkpoints/classic/` — Models with classic smoothing (lowpass + spatial + temporal)
+  - `checkpoints/classic/last.pt` — Latest checkpoint
+  - `checkpoints/classic/best.pt` — Best validation loss checkpoint
+- `checkpoints/adaptive/` — Models with adaptive temporal smoothing
+  - `checkpoints/adaptive/last.pt` — Latest checkpoint
+  - `checkpoints/adaptive/best.pt` — Best validation loss checkpoint
 
-**Note:** If you provide an absolute path, it will be used as-is. Otherwise, the path is resolved relative to the `checkpoints/` directory.
+**Note:**
+- If you provide an absolute path, it will be used as-is
+- Relative paths are resolved relative to the `checkpoints/` directory
+- You can specify subdirectory: `--resume classic/best.pt` or `--resume adaptive/best.pt`
+- Old checkpoints in `checkpoints/` root are still supported for backward compatibility
 
 When resuming, the trainer restores:
 - Model weights
@@ -176,6 +191,33 @@ When resuming, the trainer restores:
 - Scheduler state
 - Training epoch
 - Best validation metrics
+
+## Smoothing Methods
+
+The model supports two post-processing smoothing approaches:
+
+**Classic Smoothing** (`use_adaptive_smoothing: false`):
+- Low-pass frequency filter on hidden representation
+- Gaussian spatial smoothing
+- Temporal smoothing with fixed kernel
+
+**Adaptive Temporal Smoothing** (`use_adaptive_smoothing: true`):
+- Adaptive temporal smoothing that adjusts based on temporal gradients
+- More smoothing in stable regions, less smoothing where gradients are high
+- Preserves sharp transitions while reducing noise
+
+Configure in `configs/default.json`:
+```json
+{
+  "model": {
+    "use_adaptive_smoothing": false  // or true for adaptive
+  }
+}
+```
+
+Models with different smoothing types are saved in separate directories:
+- `checkpoints/classic/` — Classic smoothing models
+- `checkpoints/adaptive/` — Adaptive smoothing models
 
 ## Data Generation Modes
 

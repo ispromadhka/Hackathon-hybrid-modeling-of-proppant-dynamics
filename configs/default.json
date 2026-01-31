@@ -15,17 +15,19 @@
         "modes2": 16,
         "width": 64,
         "n_layers": 4,
-        "dropout": 0.05
+        "dropout": 0.05,
+        "use_error_corrector": false,
+        "use_adaptive_smoothing": false
     },
     "training": {
-        "n_samples": 700,
+        "n_samples": 500,
         "batch_size": 4,
-        "n_epochs": 100,
+        "n_epochs": 50,
         "train_ratio": 0.8,
-        "resume_from": "./checkpoints/best.pt",
+        "resume_from": "best.pt",
         "optimizer": {
             "type": "AdamW",
-            "lr": 0.001,
+            "lr": 0.0001,
             "weight_decay": 0.0001,
             "betas": [
                 0.9,
@@ -37,17 +39,26 @@
             "type": "cosine_with_warmup",
             "warmup_epochs": 3,
             "T_max": null,
-            "eta_min": 0.00001
+            "eta_min": 1e-6
         },
         "loss": {
-            "mse_weight": 1.5,
-            "rel_weight": 0.9,
-            "temporal_weight": 0.3
+            "mse_weight": 1.0,
+            "rel_weight": 0.5,
+            "temporal_weight": 0.1,
+            "tv_spatial_weight": 0.05,
+            "tv_temporal_weight": 0.01,
+            "noise_weight": 0.1
         },
         "trainer": {
             "patience": 8,
             "min_delta": 0.0001,
             "grad_clip": 1.0
+        },
+        "finetuning": {
+            "enabled": true,
+            "freeze_base": true,
+            "save_separate": true,
+            "corrector_lr": 0.0005
         }
     },
     "solver_generation": {
