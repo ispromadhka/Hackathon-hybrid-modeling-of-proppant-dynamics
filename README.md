@@ -44,13 +44,16 @@ python app.py --port 8050
 # Generate training data
 python app.py --generate --samples 500 --workers 8
 
-# Train FNO model
+# Complete interrupted generation
+python scripts/complete_generation.py --continue-only --workers 8
+
+# Train FNO model (all parameters from configs/default.json)
 python app.py --train
 
-# Resume training from checkpoint
+# Resume training from checkpoint (parameters from config)
 python app.py --train --resume best.pt
 
-# Override config parameters
+# Override specific config parameters via CLI (optional)
 python app.py --train --epochs 200 --lr 0.0005 --patience 10
 
 # Run web app (default: http://127.0.0.1:8050)
@@ -62,10 +65,25 @@ python app.py --host 0.0.0.0 --port 8050
 
 ## Training Configuration
 
-Training parameters are configured in `configs/default.json` under the `training` section:
+All training and model parameters are configured in `configs/default.json`. The configuration includes:
+
+**Model parameters** (`model` section):
+- `modes1`, `modes2` — Fourier modes for spectral convolutions
+- `width` — Number of channels in the model
+- `n_layers` — Number of FNO layers
+- `dropout` — Dropout rate
+
+**Training parameters** (`training` section):
 
 ```json
 {
+  "model": {
+    "modes1": 16,
+    "modes2": 16,
+    "width": 64,
+    "n_layers": 4,
+    "dropout": 0.05
+  },
   "training": {
     "n_epochs": 100,
     "batch_size": 8,
@@ -180,6 +198,27 @@ Both modes automatically:
 - Check for uniqueness against existing parameter combinations
 - Validate parameters for physical correctness (positive values, valid ranges, etc.)
 - Skip already generated simulations
+
+### Completing Interrupted Generation
+
+If generation is interrupted, you can complete it using the completion script:
+
+```bash
+# Complete all missing simulations
+python scripts/complete_generation.py --continue-only --workers 8
+
+# Complete specific number of missing simulations
+python scripts/complete_generation.py --continue-only --samples 100 --workers 8
+
+# Full generation with automatic retry
+python scripts/complete_generation.py --samples 500 --workers 8
+```
+
+The script will:
+- Find all missing simulations
+- Retry generation up to 10 times
+- Continue with available simulations if some fail
+- Complete the dataset pipeline with available data
 
 ### CLI Flags
 

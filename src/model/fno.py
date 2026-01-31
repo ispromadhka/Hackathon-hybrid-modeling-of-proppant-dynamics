@@ -177,6 +177,8 @@ class SuperBFNO(nn.Module):
         n_layers: int = 4,
         n_params: int = 7,
         dropout: float = 0.05,
+        modes1: int = 16,
+        modes2: int = 16,
     ):
         super().__init__()
         self.nx = nx
@@ -198,11 +200,14 @@ class SuperBFNO(nn.Module):
 
         # FNO layers with decreasing mode counts (progressive frequency reduction)
         self.fno_layers = nn.ModuleList()
+        # Используем modes из конфига, с уменьшением для последующих слоев
+        base_modes1 = modes1
+        base_modes2 = modes2
         modes_schedule = [
-            (16, 16),  # Start with medium frequencies
-            (12, 12),  # Reduce
-            (10, 10),  # Further reduce
-            (8, 8),    # Low frequencies only (smoothest)
+            (base_modes1, base_modes2),
+            (max(8, base_modes1 - 4), max(8, base_modes2 - 4)),
+            (max(6, base_modes1 - 6), max(6, base_modes2 - 6)),
+            (max(4, base_modes1 - 8), max(4, base_modes2 - 8)),
         ]
 
         for i in range(n_layers):
@@ -298,17 +303,23 @@ def create_model(
     ny: int = 100,
     n_times: int = 201,
     n_params: int = 7,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    model_cfg: dict = None
 ) -> SuperBFNO:
     """Create SuperB-FNO model for proppant transport."""
+    if model_cfg is None:
+        model_cfg = {}
+
     model = SuperBFNO(
         nx=nx,
         ny=ny,
         n_times=n_times,
-        width=64,
-        n_layers=4,
+        width=model_cfg.get('width', 64),
+        n_layers=model_cfg.get('n_layers', 4),
         n_params=n_params,
-        dropout=0.05,
+        dropout=model_cfg.get('dropout', 0.05),
+        modes1=model_cfg.get('modes1', 16),
+        modes2=model_cfg.get('modes2', 16),
     )
     return model.to(device)
 

@@ -390,6 +390,7 @@ def main(config_path: Path = None, resume_from: Path = None):
     with open(config_path) as f:
         cfg = json.load(f)
 
+    model_cfg = cfg.get('model', {})
     train_cfg = cfg.get('training', {})
     optimizer_cfg = train_cfg.get('optimizer', {})
     scheduler_cfg = train_cfg.get('scheduler', {})
@@ -440,7 +441,8 @@ def main(config_path: Path = None, resume_from: Path = None):
         ny=metadata['ny'],
         n_times=n_times,
         n_params=n_params,
-        device=device
+        device=device,
+        model_cfg=model_cfg
     )
 
     trainer = Trainer(

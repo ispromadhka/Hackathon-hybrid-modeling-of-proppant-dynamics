@@ -14,14 +14,15 @@
         "modes1": 16,
         "modes2": 16,
         "width": 64,
-        "n_layers": 4
+        "n_layers": 4,
+        "dropout": 0.05
     },
     "training": {
-        "n_samples": 500,
-        "batch_size": 8,
+        "n_samples": 700,
+        "batch_size": 4,
         "n_epochs": 100,
         "train_ratio": 0.8,
-        "resume_from": null,
+        "resume_from": "./checkpoints/best.pt",
         "optimizer": {
             "type": "AdamW",
             "lr": 0.001,
@@ -34,14 +35,14 @@
         },
         "scheduler": {
             "type": "cosine_with_warmup",
-            "warmup_epochs": 5,
+            "warmup_epochs": 3,
             "T_max": null,
             "eta_min": 0.00001
         },
         "loss": {
-            "mse_weight": 1.0,
-            "rel_weight": 0.5,
-            "temporal_weight": 0.1
+            "mse_weight": 1.5,
+            "rel_weight": 0.9,
+            "temporal_weight": 0.3
         },
         "trainer": {
             "patience": 8,

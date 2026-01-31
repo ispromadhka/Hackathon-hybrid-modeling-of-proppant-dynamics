@@ -40,8 +40,14 @@ def main():
         n_workers = args.workers
         if n_workers == -1:
             n_workers = os.cpu_count() or 1
-        n = generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers, config_path=Path(args.config), clear_processed=bool(args.clear_processed))
-        print(f"Built {n} samples in {data_dir}")
+        try:
+            n = generate_dataset(data_dir, n_samples=args.samples, n_workers=n_workers, config_path=Path(args.config), clear_processed=bool(args.clear_processed))
+            print(f"Built {n} samples in {data_dir}")
+        except Exception as e:
+            print(f"Error during generation: {e}")
+            print("\nYou can continue generation later with:")
+            print(f"  python scripts/complete_generation.py --continue-only --workers {n_workers}")
+            raise
 
     elif args.train:
         from src.training.train import main as train_main
@@ -51,14 +57,15 @@ def main():
         if args.resume:
             resume_from = args.resume
 
-        if args.epochs or args.lr or args.patience:
+        # CLI аргументы переопределяют параметры из конфига только если указаны
+        if args.epochs is not None or args.lr is not None or args.patience is not None:
             with open(config_path) as f:
                 cfg = json.load(f)
-            if args.epochs:
+            if args.epochs is not None:
                 cfg['training']['n_epochs'] = args.epochs
-            if args.lr:
+            if args.lr is not None:
                 cfg['training']['optimizer']['lr'] = args.lr
-            if args.patience:
+            if args.patience is not None:
                 cfg['training']['trainer']['patience'] = args.patience
             import tempfile
             import os
@@ -71,6 +78,7 @@ def main():
             finally:
                 os.unlink(tmp_file.name)
         else:
+            # Все параметры берутся из конфига
             train_main(config_path=config_path, resume_from=resume_from)
 
     elif args.legacy:

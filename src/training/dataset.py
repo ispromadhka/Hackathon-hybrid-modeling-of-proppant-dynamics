@@ -67,14 +67,31 @@ class ProppantDataset(Dataset):
             self.nx = data['concentrations'].shape[2]
 
         if self.gen_cfg:
+            valid_files = []
             invalid_files = []
             for f in self.files:
-                with np.load(f) as data:
-                    if 'params_raw' in data:
-                        if not validate_params(data['params_raw'], self.gen_cfg):
-                            invalid_files.append(f)
+                try:
+                    with np.load(f) as data:
+                        if 'params_raw' in data:
+                            if validate_params(data['params_raw'], self.gen_cfg):
+                                valid_files.append(f)
+                            else:
+                                invalid_files.append(f)
+                        else:
+                            valid_files.append(f)
+                except Exception:
+                    invalid_files.append(f)
+
             if invalid_files:
-                raise ValueError(f"Found {len(invalid_files)} files with invalid parameters")
+                print(f"Warning: Skipping {len(invalid_files)} files with invalid parameters:")
+                for f in invalid_files[:5]:
+                    print(f"  - {f.name}")
+                if len(invalid_files) > 5:
+                    print(f"  ... and {len(invalid_files) - 5} more")
+
+            self.files = valid_files
+            if len(self.files) == 0:
+                raise ValueError(f"No valid data files found in {data_dir}")
 
     def __len__(self) -> int:
         return len(self.files)
@@ -394,12 +411,27 @@ def generate_dataset(
             expected_paths = [_params_to_path(p, timeseries_root) for p in params_list]
             missing = [p for p in params_list if not _params_to_path(p, timeseries_root).exists()]
             tries = 0
-            while missing and tries < 5:
-                generate_for_params(missing, project_root=project_root, config_path=config_path, n_workers=n_workers)
+            max_tries = 10
+            while missing and tries < max_tries:
+                if tries > 0:
+                    print(f"\nRetry {tries}/{max_tries}: Generating {len(missing)} missing simulations...")
+                try:
+                    generated = generate_for_params(missing, project_root=project_root, config_path=config_path, n_workers=n_workers)
+                    if generated == 0:
+                        print(f"Warning: No new simulations generated in attempt {tries + 1}")
+                except Exception as e:
+                    print(f"Warning: Error during generation attempt {tries + 1}: {e}")
                 missing = [p for p in params_list if not _params_to_path(p, timeseries_root).exists()]
+                if not missing:
+                    break
                 tries += 1
             if missing:
-                raise RuntimeError(f"Could not generate {len(missing)} simulations")
+                print(f"\nWarning: Could not generate {len(missing)} simulations after {max_tries} attempts")
+                print(f"Continuing with {len(params_list) - len(missing)}/{len(params_list)} available simulations")
+                params_list = [p for p in params_list if _params_to_path(p, timeseries_root).exists()]
+                if len(params_list) == 0:
+                    raise RuntimeError("No simulations available. Please check generation parameters and retry.")
+                expected_paths = [_params_to_path(p, timeseries_root) for p in params_list]
             pipeline.update(1)
 
             pipeline.set_postfix_str("torch")
@@ -409,7 +441,8 @@ def generate_dataset(
             pipeline.update(1)
 
             pipeline.set_postfix_str("processed")
-            n = build_processed_from_torch_data(output_dir, torch_path, max_samples=target_n, config_path=config_path, clear_existing=bool(clear_processed))
+            actual_samples = len([p for p in params_list if _params_to_path(p, timeseries_root).exists()])
+            n = build_processed_from_torch_data(output_dir, torch_path, max_samples=actual_samples, config_path=config_path, clear_existing=bool(clear_processed))
             pipeline.update(1)
             return n
         finally:

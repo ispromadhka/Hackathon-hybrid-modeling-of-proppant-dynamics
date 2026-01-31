@@ -9,36 +9,53 @@ __pycache__/
 venv/
 .venv/
 env/
+ENV/
+env.bak/
+venv.bak/
 *.egg-info/
 dist/
 build/
 *.egg
-*.egg-info/
 .python-version
 
-# Data (large files)
+# Data files (large binary files)
 data/processed/
 data/raw/
 *.npz
 *.npy
 *.h5
 *.hdf5
+
+# Model checkpoints and weights (large files)
+checkpoints/
 *.pt
 *.pth
+*.ckpt
+*.safetensors
 *.pkl
 *.pickle
 
-# Model checkpoints (large)
-checkpoints/
-*.ckpt
-*.safetensors
+# Simulation data
+simulation_data/
+simulation_timeseries/
+simulation_results.csv
+torch_data/
+*.tmp
+*.tmp.*
+tmp*/
+.tmp/
 
-# Jupyter
+# Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
 
-# OS
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
@@ -56,29 +73,15 @@ $RECYCLE.BIN/
 .settings/
 *.sublime-project
 *.sublime-workspace
+*.code-workspace
 
 # Logs
 *.log
 logs/
 *.out
+*.err
 
-# Reference frames (temporary)
-reference_frames/
-
-# Generation data
-simulation_results.csv
-simulation_data/
-simulation_timeseries/
-torch_data/
-*.tmp
-*.tmp.*
-tmp*/
-.simulation_gifs/
-.simulation_data/
-.simulation_timeseries/
-.torch_data/
-
-# Visualizations
+# Visualizations and plots
 *.gif
 *.png
 *.jpg
@@ -88,16 +91,14 @@ tmp*/
 plots/
 figures/
 results/
+reference_frames/
+.simulation_gifs/
 
 # Test files
-src/solver/t.ipynb
-src/solver/t.py
 *.test.py
 test_*.py
 *_test.py
-
-# Unused solver files (already deleted)
-src/solver/Case1/
+tests/__pycache__/
 
 # Caches
 __pypackages__/
@@ -106,14 +107,12 @@ __pypackages__/
 .ruff_cache/
 .cache/
 htmlcov/
-.coverage
-coverage.xml
-.cursor/
 .tox/
 .hypothesis/
 *.cover
-.hypothesis/
-.pytest_cache/
+.coverage
+coverage.xml
+.cursor/
 
 # Environment variables
 .env
@@ -129,8 +128,10 @@ coverage.xml
 *~
 *.orig
 *.rej
+*.swo
+*.swp
 
-# Application specific
+# Database files
 *.db
 *.sqlite
 *.sqlite3
@@ -140,3 +141,31 @@ build/
 dist/
 *.whl
 *.tar.gz
+*.zip
+
+# Project specific
+src/solver/Case1/
+src/solver/t.ipynb
+src/solver/t.py
+
+# Web static files (keep structure, ignore generated)
+web/static/generated/
+web/uploads/
+
+# Docker
+.dockerignore
+
+# MacOS
+.AppleDouble
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
