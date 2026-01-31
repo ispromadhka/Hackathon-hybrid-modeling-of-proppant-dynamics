@@ -266,6 +266,113 @@ Vₚ = Vf + Vslip(c)                    — proppant velocity
 2. **Convert**: `torch_data/data.pt`
 3. **Process**: `data/processed/sample_*.npz`
 
+## Git Workflow
+
+### Initial Setup
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Hackathon-hybrid-modeling-of-proppant-dynamics
+
+# Check current branch
+git branch
+
+# Switch to main branch (if not already on it)
+git checkout main
+```
+
+### Making Changes and Pushing to Main
+
+```bash
+# 1. Check status of your changes
+git status
+
+# 2. Add files to staging
+git add .
+# Or add specific files:
+git add <file1> <file2>
+
+# 3. Commit your changes
+git commit -m "Description of your changes"
+
+# 4. Push to main branch
+git push origin main
+```
+
+### Working with Branches (Recommended)
+
+For better collaboration, consider working on feature branches:
+
+```bash
+# Create and switch to a new branch
+git checkout -b feature/your-feature-name
+
+# Make your changes, then commit
+git add .
+git commit -m "Add new feature"
+
+# Push the branch to remote
+git push origin feature/your-feature-name
+
+# Merge to main (after review/approval)
+git checkout main
+git merge feature/your-feature-name
+git push origin main
+```
+
+### Viewing History
+
+```bash
+# View commit history
+git log
+
+# Compact one-line view
+git log --oneline
+
+# With graph visualization
+git log --oneline --graph --all
+
+# View changes in a file
+git log -p <filename>
+```
+
+### Common Git Commands
+
+```bash
+# Pull latest changes from remote
+git pull origin main
+
+# View differences
+git diff
+
+# View staged changes
+git diff --staged
+
+# Undo changes to a file (before staging)
+git checkout -- <filename>
+
+# Unstage a file
+git reset HEAD <filename>
+
+# View remote repositories
+git remote -v
+```
+
+### Troubleshooting
+
+If you encounter issues pushing to main:
+
+```bash
+# If main branch is protected, you may need to:
+# 1. Create a pull request instead
+# 2. Or request branch protection to be adjusted
+
+# If you need to force push (use with caution!)
+git push origin main --force
+# ⚠️ Warning: Only use --force if you're sure no one else is working on main
+```
+
 ## Goal
 
 Replace numerical solver (~5s per simulation) with FNO for 100-1000x speedup.
