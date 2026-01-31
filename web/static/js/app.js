@@ -60,6 +60,7 @@ function toggleTheme() {
         document.body.classList.add('dark-theme');
         localStorage.setItem('theme', 'dark');
     }
+    // Re-render with new theme colors
     if (simulationData) {
         renderFrame(currentFrame);
     } else {
@@ -111,6 +112,17 @@ function getColorscale() {
     ];
 }
 
+// Colorscale for error plot (white to red)
+function getErrorColorscale() {
+    return [
+        [0, 'rgb(255, 255, 255)'],
+        [0.25, 'rgb(255, 220, 180)'],
+        [0.5, 'rgb(255, 160, 100)'],
+        [0.75, 'rgb(230, 80, 50)'],
+        [1, 'rgb(180, 0, 30)']
+    ];
+}
+
 // Инициализация пустых графиков
 function initEmptyPlots() {
     const layout = getPlotlyLayout([0, 60], [0, 60]);  // L=60, H=60 из training data
@@ -135,8 +147,23 @@ function initEmptyPlots() {
         }
     }];
 
+    const emptyErrorData = [{
+        z: [[0]],
+        type: 'heatmap',
+        colorscale: getErrorColorscale(),
+        zsmooth: 'best',
+        showscale: true,
+        colorbar: {
+            title: '|Δc|',
+            titleside: 'right',
+            thickness: 15,
+            len: 0.9
+        }
+    }];
+
     Plotly.newPlot('nn-plot', emptyData, layout, config);
     Plotly.newPlot('ns-plot', emptyData, layout, config);
+    Plotly.newPlot('error-plot', emptyErrorData, layout, config);
 }
 
 // Отрисовка кадра
@@ -153,6 +180,12 @@ function renderFrame(frameIdx) {
     const nnFrame = nn[frameIdx];
     const nsFrame = ns[frameIdx];
 
+    // Compute error frame |nn - ns|
+    const errorFrame = nnFrame.map((row, i) =>
+        row.map((val, j) => Math.abs(val - nsFrame[i][j]))
+    );
+    const errorMax = Math.max(...errorFrame.flat()) || 0.01;
+
     const nnData = [{
         z: nnFrame,
         x: x_grid,
@@ -161,7 +194,7 @@ function renderFrame(frameIdx) {
         colorscale: getColorscale(),
         zmin: 0,
         zmax: c_max,
-        zsmooth: 'best',  // Smooth interpolation instead of pixels
+        zsmooth: 'best',
         showscale: true,
         colorbar: {
             title: 'c',
@@ -180,7 +213,7 @@ function renderFrame(frameIdx) {
         colorscale: getColorscale(),
         zmin: 0,
         zmax: c_max,
-        zsmooth: 'best',  // Smooth interpolation instead of pixels
+        zsmooth: 'best',
         showscale: true,
         colorbar: {
             title: 'c',
@@ -189,6 +222,25 @@ function renderFrame(frameIdx) {
             len: 0.9
         },
         hovertemplate: 'x: %{x:.2f} м<br>y: %{y:.2f} м<br>c: %{z:.4f}<extra></extra>'
+    }];
+
+    const errorData = [{
+        z: errorFrame,
+        x: x_grid,
+        y: y_grid,
+        type: 'heatmap',
+        colorscale: getErrorColorscale(),
+        zmin: 0,
+        zmax: errorMax,
+        zsmooth: 'best',
+        showscale: true,
+        colorbar: {
+            title: '|Δc|',
+            titleside: 'right',
+            thickness: 15,
+            len: 0.9
+        },
+        hovertemplate: 'x: %{x:.2f} м<br>y: %{y:.2f} м<br>|Δc|: %{z:.4f}<extra></extra>'
     }];
 
     const config = {
@@ -200,6 +252,7 @@ function renderFrame(frameIdx) {
 
     Plotly.react('nn-plot', nnData, layout, config);
     Plotly.react('ns-plot', nsData, layout, config);
+    Plotly.react('error-plot', errorData, layout, config);
 
     const t = times[frameIdx];
     timeCurrent.textContent = `${t.toFixed(1)} с`;
