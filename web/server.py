@@ -283,16 +283,16 @@ async def index():
 async def simulate(params: SimulationParams):
     """Run simulation with both NN and NS solver."""
 
-    # Get config values - use MODEL_NX/NY from checkpoint for consistency
+    # Get config values from training metadata
     dT = MODEL_META.get('dT', 2.0) if MODEL_META else 2.0
     Tmax = MODEL_META.get('Tmax', 400.0) if MODEL_META else 400.0
     cmax = MODEL_META.get('cmax', 0.635) if MODEL_META else 0.635
-    # Use model dimensions from checkpoint (100x100 square)
+    # Physical domain from training (IMPORTANT: must match training data!)
+    Lx = MODEL_META.get('L', 60.0) if MODEL_META else 60.0
+    Ly = MODEL_META.get('H', 60.0) if MODEL_META else 60.0
+    # Grid dimensions from model checkpoint
     nx = MODEL_NX
     ny = MODEL_NY
-    # Physical domain matching grid (square)
-    Lx = float(nx)  # L = nx для квадратной сетки
-    Ly = float(ny)  # H = ny
 
     # Note: Negative Q for solver convention (inflow)
     Q_internal = -abs(params.Q)
