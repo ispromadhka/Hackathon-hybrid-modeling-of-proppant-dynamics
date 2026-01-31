@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=8, help='Early stopping patience')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint for fine-tuning')
     parser.add_argument('--port', type=int, default=8050, help='Web app port')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Web app host')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
@@ -44,8 +45,9 @@ def main():
 
     elif args.train:
         from src.training.train import main as train_main
-        print(f"Training for {args.epochs} epochs (lr={args.lr}, patience={args.patience})...")
-        train_main(epochs=args.epochs, lr=args.lr, patience=args.patience)
+        mode = "Resume" if args.resume else "New"
+        print(f"[{mode}] Training: {args.epochs} epochs, lr={args.lr}, patience={args.patience}")
+        train_main(epochs=args.epochs, lr=args.lr, patience=args.patience, resume=args.resume)
 
     elif args.legacy:
         # Legacy Dash interface

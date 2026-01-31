@@ -1,10 +1,12 @@
 """
 FastAPI backend for Proppant Transport Simulator.
 Supports both old (complex weights) and new model formats.
+Saves comparison videos as MP4.
 """
 
 import json
 import time
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +28,7 @@ ROOT = Path(__file__).parent.parent
 WEB_DIR = Path(__file__).parent
 CHECKPOINT_PATH = ROOT / 'checkpoints' / 'best.pt'
 DATA_META_PATH = ROOT / 'data' / 'processed' / 'metadata.json'
+VIDEO_DIR = ROOT / 'checkpoints' / 'videos'
 
 # Global model state
 MODEL = None
@@ -164,6 +167,97 @@ def normalize_params(raw: np.ndarray) -> np.ndarray:
     denom = np.where(denom == 0, 1.0, denom)
     x = (raw.astype(np.float32) - pmin) / denom
     return np.clip(x, 0.0, 1.0).astype(np.float32)
+
+
+def save_comparison_video(nn_data: np.ndarray, ns_data: np.ndarray, times: np.ndarray,
+                          x_grid: list, y_grid: list, c_max: float, params, max_frames: int = 50):
+    """Save side-by-side comparison as MP4 video."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation, FFMpegWriter
+        from matplotlib.colors import LinearSegmentedColormap
+
+        VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Subsample for smooth video
+        n_frames = len(times)
+        if n_frames > max_frames:
+            step = n_frames // max_frames
+            indices = list(range(0, n_frames, step))[:max_frames]
+            nn_data = nn_data[indices]
+            ns_data = ns_data[indices]
+            times = times[indices]
+
+        # Colormap
+        colors = [(0.231, 0.298, 0.753), (0.384, 0.510, 0.918),
+                  (0.863, 0.863, 0.863), (0.945, 0.612, 0.318), (0.706, 0.016, 0.149)]
+        cmap = LinearSegmentedColormap.from_list('rdbu', colors, N=256)
+
+        x_arr, y_arr = np.array(x_grid), np.array(y_grid)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=100)
+        fig.patch.set_facecolor('#242830')
+
+        for ax in axes:
+            ax.set_facecolor('#2d323c')
+            ax.tick_params(colors='#95a5a6')
+            for spine in ax.spines.values():
+                spine.set_color('#3d4450')
+
+        im_nn = axes[0].imshow(nn_data[0], origin='lower', cmap=cmap,
+                               extent=[x_arr.min(), x_arr.max(), y_arr.min(), y_arr.max()],
+                               vmin=0, vmax=c_max, aspect='auto', interpolation='bilinear')
+        axes[0].set_title('НС (нейросеть)', color='#ecf0f1', fontsize=12)
+        axes[0].set_xlabel('x (м)', color='#95a5a6')
+        axes[0].set_ylabel('y (м)', color='#95a5a6')
+
+        im_ns = axes[1].imshow(ns_data[0], origin='lower', cmap=cmap,
+                               extent=[x_arr.min(), x_arr.max(), y_arr.min(), y_arr.max()],
+                               vmin=0, vmax=c_max, aspect='auto', interpolation='bilinear')
+        axes[1].set_title('ЧМ (численный метод)', color='#ecf0f1', fontsize=12)
+        axes[1].set_xlabel('x (м)', color='#95a5a6')
+        axes[1].set_ylabel('y (м)', color='#95a5a6')
+
+        for im, ax in [(im_nn, axes[0]), (im_ns, axes[1])]:
+            cbar = plt.colorbar(im, ax=ax, shrink=0.9)
+            cbar.ax.tick_params(colors='#95a5a6')
+
+        time_text = fig.text(0.5, 0.95, f't = {times[0]:.1f} с', ha='center', color='#ecf0f1', fontsize=14)
+        plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+        def update(frame):
+            im_nn.set_array(nn_data[frame])
+            im_ns.set_array(ns_data[frame])
+            time_text.set_text(f't = {times[frame]:.1f} с')
+            return [im_nn, im_ns, time_text]
+
+        # Create filename from params
+        param_str = f"c{params.c_in:.2f}_Q{params.Q:.2f}_chi{params.chi:.0f}"
+        param_hash = hashlib.md5(param_str.encode()).hexdigest()[:6]
+        filename = f"sim_{param_str}_{param_hash}.mp4"
+        filepath = VIDEO_DIR / filename
+
+        anim = FuncAnimation(fig, update, frames=len(times), interval=80, blit=True)
+
+        try:
+            writer = FFMpegWriter(fps=12, bitrate=2000)
+            anim.save(str(filepath), writer=writer)
+            print(f"[VIDEO] Saved: {filename}")
+        except Exception as e:
+            # Fallback to GIF if ffmpeg not available
+            from matplotlib.animation import PillowWriter
+            gif_path = filepath.with_suffix('.gif')
+            anim.save(str(gif_path), writer=PillowWriter(fps=12))
+            print(f"[VIDEO] Saved as GIF (ffmpeg not available): {gif_path.name}")
+
+        plt.close(fig)
+        return str(filepath)
+
+    except Exception as e:
+        print(f"[VIDEO] Error: {e}")
+        return None
 
 
 @app.on_event("startup")
@@ -346,6 +440,10 @@ async def simulate(params: SimulationParams):
     # Use actual max concentration for colorscale (at least c_in, but could be higher)
     actual_max = max(float(ns_result.max()), float(params.c_in))
     print(f"[DEBUG] Using c_max={actual_max:.4f} for colorscale (ns_max={ns_result.max():.4f}, c_in={params.c_in})")
+
+    # Save comparison video (in background)
+    if nn_available:
+        save_comparison_video(nn_result, ns_result, times, x_grid, y_grid, actual_max, params)
 
     # Subsample frames to reduce JSON response size (every 4th frame: 201 -> 51)
     step = 4
