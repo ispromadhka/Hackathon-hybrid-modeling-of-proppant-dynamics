@@ -17,17 +17,18 @@
         "n_layers": 4,
         "dropout": 0.05,
         "use_error_corrector": false,
-        "use_adaptive_smoothing": false
+        "use_adaptive_smoothing": true
     },
     "training": {
         "n_samples": 500,
-        "batch_size": 4,
+        "max_samples": 450,
+        "batch_size": 8,
         "n_epochs": 50,
         "train_ratio": 0.8,
-        "resume_from": "best.pt",
+        "resume_from": null,
         "optimizer": {
             "type": "AdamW",
-            "lr": 0.0001,
+            "lr": 0.001,
             "weight_decay": 0.0001,
             "betas": [
                 0.9,
@@ -45,17 +46,17 @@
             "mse_weight": 1.0,
             "rel_weight": 0.5,
             "temporal_weight": 0.1,
-            "tv_spatial_weight": 0.05,
-            "tv_temporal_weight": 0.01,
-            "noise_weight": 0.1
+            "tv_spatial_weight": 0.001,
+            "tv_temporal_weight": 0.0001,
+            "noise_weight": 0.02
         },
         "trainer": {
-            "patience": 8,
+            "patience": 15,
             "min_delta": 0.0001,
             "grad_clip": 1.0
         },
         "finetuning": {
-            "enabled": true,
+            "enabled": false,
             "freeze_base": true,
             "save_separate": true,
             "corrector_lr": 0.0005
@@ -65,8 +66,8 @@
         "seed": 42,
         "grid": {
             "L": 100.0,
-            "H": 60.0,
-            "Nx": 150,
+            "H": 100.0,
+            "Nx": 100,
             "Ny": 100,
             "Tmax": 400.0
         },

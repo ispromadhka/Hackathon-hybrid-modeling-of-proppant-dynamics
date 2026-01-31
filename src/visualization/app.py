@@ -63,36 +63,21 @@ def load_sim_index():
 def load_model():
     global MODEL
     try:
-        # Try to find checkpoint in adaptive or classic subdirectories
+        # Use only adaptive checkpoint
         checkpoint_path = None
-        smoothing_type = None
+        smoothing_type = 'adaptive'
 
-        # Try adaptive first
+        # Try adaptive first (best.pt)
         if CHECKPOINT_PATH_ADAPTIVE.exists():
             checkpoint_path = CHECKPOINT_PATH_ADAPTIVE
-            smoothing_type = 'adaptive'
+            print(f"Загружаем модель из {CHECKPOINT_PATH_ADAPTIVE}")
+        # Fallback to last.pt in adaptive
         elif (CHECKPOINT_DIR / 'adaptive' / 'last.pt').exists():
             checkpoint_path = CHECKPOINT_DIR / 'adaptive' / 'last.pt'
-            smoothing_type = 'adaptive'
             print(f"best.pt не найден в adaptive/, используем last.pt")
-        # Try classic
-        elif CHECKPOINT_PATH_CLASSIC.exists():
-            checkpoint_path = CHECKPOINT_PATH_CLASSIC
-            smoothing_type = 'classic'
-        elif (CHECKPOINT_DIR / 'classic' / 'last.pt').exists():
-            checkpoint_path = CHECKPOINT_DIR / 'classic' / 'last.pt'
-            smoothing_type = 'classic'
-            print(f"best.pt не найден в classic/, используем last.pt")
-        # Fallback to old location (root checkpoints/)
-        elif (CHECKPOINT_DIR / 'best.pt').exists():
-            checkpoint_path = CHECKPOINT_DIR / 'best.pt'
-            smoothing_type = 'classic'
-            print(f"Используется старый формат чекпоинта из корня checkpoints/")
-        elif (CHECKPOINT_DIR / 'last.pt').exists():
-            checkpoint_path = CHECKPOINT_DIR / 'last.pt'
-            smoothing_type = 'classic'
-            print(f"Используется старый формат чекпоинта из корня checkpoints/")
         else:
+            print(f"Предупреждение: Модель не найдена в {CHECKPOINT_DIR / 'adaptive'}")
+            print(f"Ожидаются файлы: {CHECKPOINT_DIR / 'adaptive' / 'best.pt'} или {CHECKPOINT_DIR / 'adaptive' / 'last.pt'}")
             MODEL = None
             return
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -132,8 +117,23 @@ def load_model():
         else:
             n_times = int(DATA_META.get('n_times', 201)) if DATA_META else 201
 
+        # Detect model parameters from checkpoint
+        width = None
+        modes1 = None
+        modes2 = None
+
+        # Detect width from lift layer
+        if 'lift.0.weight' in state_dict:
+            width = state_dict['lift.0.weight'].shape[0]
+        elif 'fno_layers.0.local_conv.weight' in state_dict:
+            width = state_dict['fno_layers.0.local_conv.weight'].shape[0]
+
+        # Detect modes from spectral conv weights
+        if 'fno_layers.0.spectral_conv.weights1' in state_dict:
+            modes1 = state_dict['fno_layers.0.spectral_conv.weights1'].shape[2]
+            modes2 = state_dict['fno_layers.0.spectral_conv.weights1'].shape[3]
+
         # Detect if checkpoint uses adaptive smoothing
-        # First check by directory, then by state_dict keys
         if smoothing_type:
             use_adaptive = (smoothing_type == 'adaptive')
         else:
@@ -141,9 +141,23 @@ def load_model():
             has_old_smoothing = 'spatial_smooth.kernel' in state_dict or any('lowpass' in k for k in state_dict.keys())
             use_adaptive = has_adaptive and not has_old_smoothing
 
+        # Build model_cfg with detected parameters
+        model_cfg = {
+            'use_error_corrector': False,
+            'use_adaptive_smoothing': use_adaptive
+        }
+        if width is not None:
+            model_cfg['width'] = width
+        if modes1 is not None:
+            model_cfg['modes1'] = modes1
+        if modes2 is not None:
+            model_cfg['modes2'] = modes2
+
+        print(f"Параметры модели из чекпоинта: width={width}, modes1={modes1}, modes2={modes2}")
+
         MODEL = create_model(
             nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=device,
-            model_cfg={'use_error_corrector': False, 'use_adaptive_smoothing': use_adaptive}
+            model_cfg=model_cfg
         )
 
         # Filter incompatible weights

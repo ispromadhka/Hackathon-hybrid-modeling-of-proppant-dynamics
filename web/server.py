@@ -107,7 +107,7 @@ def load_model():
     else:
         # Defaults must match configs/default.json solver_generation.grid
         MODEL_META = {
-            'nx': 150,
+            'nx': 100,
             'ny': 100,
             'n_times': 201,
             'param_names': ['c_in', 'w0', 'mu0', 'Q', 'chi', 'c_in_times', 'dT'],
@@ -115,7 +115,7 @@ def load_model():
             'param_max': [0.45, 0.03, 0.02, -0.01, 30.0, 200.0, 2.0],
             'cmax': 0.635,
             'L': 100.0,
-            'H': 60.0,
+            'H': 100.0,
             'Tmax': 400.0,
             'dT': 2.0
         }

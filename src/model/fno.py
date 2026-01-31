@@ -14,6 +14,15 @@ import torch.nn.functional as F
 import math
 
 
+def get_num_groups(num_channels: int, max_groups: int = 8) -> int:
+    """Calculate number of groups for GroupNorm that divides num_channels."""
+    # Find the largest divisor of num_channels that is <= max_groups
+    for groups in range(max_groups, 0, -1):
+        if num_channels % groups == 0:
+            return groups
+    return 1  # Fallback: always works
+
+
 class SpectralConv2d(nn.Module):
     """2D Fourier layer with learnable spectral weights and noise suppression."""
 
@@ -115,7 +124,8 @@ class FNOBlock(nn.Module):
         super().__init__()
         self.spectral_conv = SpectralConv2d(width, width, modes1, modes2)
         self.local_conv = nn.Conv2d(width, width, 1)
-        self.norm = nn.GroupNorm(8, width)
+        num_groups = get_num_groups(width, max_groups=8)
+        self.norm = nn.GroupNorm(num_groups, width)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -176,7 +186,10 @@ class AdaptiveTemporalSmooth(nn.Module):
         x_diff = x[:, 1:] - x[:, :-1]
         x_diff = F.pad(x_diff, (0, 0, 0, 0, 1, 0), mode='replicate')
 
-        weight = torch.exp(-x_diff.abs() * 5)
+        # Use sigmoid for more stable weight computation
+        # Clamp to avoid extreme values (0.1 to 0.9 range)
+        weight = torch.sigmoid(-x_diff.abs() * 5)
+        weight = torch.clamp(weight, 0.1, 0.9)
 
         x_reshaped = x.permute(0, 2, 3, 1).reshape(-1, 1, T)
         kernel = self.kernel.view(1, 1, -1)
@@ -208,9 +221,17 @@ class HybridErrorCorrector(nn.Module):
             nn.Conv2d(n_times, n_times, kernel_size=3, padding=1),
         )
 
+        # Calculate number of heads that divides n_times
+        # Try common divisors: 1, 2, 3, 4, 5, 6, 7, 8
+        num_heads = 4
+        for candidate in [8, 7, 6, 5, 4, 3, 2, 1]:
+            if n_times % candidate == 0:
+                num_heads = candidate
+                break
+
         self.attn = nn.MultiheadAttention(
             embed_dim=n_times,
-            num_heads=4,
+            num_heads=num_heads,
             batch_first=True,
         )
 
@@ -224,9 +245,23 @@ class HybridErrorCorrector(nn.Module):
 
         x = self.conv(x)
 
-        x = x.permute(0, 2, 3, 1).reshape(B, H * W, T)
-        x, _ = self.attn(x, x, x)
-        x = x.reshape(B, H, W, T).permute(0, 3, 1, 2)
+        # Use local attention instead of global to reduce memory
+        # Process in chunks along spatial dimension
+        # Ensure chunk_size is reasonable to avoid OOM
+        chunk_size = min(256, H * W, max(64, 10000 // T))  # Limit based on available memory
+        if H * W > chunk_size:
+            x_reshaped = x.permute(0, 2, 3, 1).reshape(B, H * W, T)
+            x_chunks = []
+            for i in range(0, H * W, chunk_size):
+                chunk = x_reshaped[:, i:i+chunk_size, :]
+                chunk_out, _ = self.attn(chunk, chunk, chunk)
+                x_chunks.append(chunk_out)
+            x = torch.cat(x_chunks, dim=1)
+            x = x.reshape(B, H, W, T).permute(0, 3, 1, 2)
+        else:
+            x = x.permute(0, 2, 3, 1).reshape(B, H * W, T)
+            x, _ = self.attn(x, x, x)
+            x = x.reshape(B, H, W, T).permute(0, 3, 1, 2)
 
         return x
 
@@ -254,7 +289,7 @@ class SuperBFNO(nn.Module):
         modes1: int = 16,
         modes2: int = 16,
         use_error_corrector: bool = False,
-        use_adaptive_smoothing: bool = False,
+        use_adaptive_smoothing: bool = True,
     ):
         super().__init__()
         self.nx = nx
@@ -269,10 +304,11 @@ class SuperBFNO(nn.Module):
         in_channels = n_params + 2
 
         # Encoder with smooth activation
+        num_groups_lift = get_num_groups(width, max_groups=8)
         self.lift = nn.Sequential(
             nn.Conv2d(in_channels, width, 1),
             nn.GELU(),
-            nn.GroupNorm(8, width),
+            nn.GroupNorm(num_groups_lift, width),
             nn.Conv2d(width, width, 1),
         )
 
@@ -314,13 +350,15 @@ class SuperBFNO(nn.Module):
         )
 
         # Output projection with smooth normalization
+        num_groups_2x = get_num_groups(width * 2, max_groups=8)
+        num_groups_1x = get_num_groups(width, max_groups=8)
         self.project = nn.Sequential(
             nn.Conv2d(width, width * 2, 1),
             nn.GELU(),
-            nn.GroupNorm(8, width * 2),
+            nn.GroupNorm(num_groups_2x, width * 2),
             nn.Conv2d(width * 2, width, 1),
             nn.GELU(),
-            nn.GroupNorm(8, width),
+            nn.GroupNorm(num_groups_1x, width),
             nn.Conv2d(width, n_times, 1),
         )
 
@@ -424,7 +462,7 @@ def create_model(
         modes1=model_cfg.get('modes1', 16),
         modes2=model_cfg.get('modes2', 16),
         use_error_corrector=model_cfg.get('use_error_corrector', False),
-        use_adaptive_smoothing=model_cfg.get('use_adaptive_smoothing', False),
+        use_adaptive_smoothing=model_cfg.get('use_adaptive_smoothing', True),
     )
     return model.to(device)
 

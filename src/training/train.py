@@ -40,13 +40,13 @@ class CombinedLoss(nn.Module):
     def tv_spatial(self, x):
         dx = x[:, :, 1:, :] - x[:, :, :-1, :]
         dy = x[:, :, :, 1:] - x[:, :, :, :-1]
-        return dx.pow(2).mean() + dy.pow(2).mean()
+        return dx.abs().mean() + dy.abs().mean()
 
     def tv_temporal(self, x):
         if x.shape[1] <= 1:
             return torch.tensor(0.0, device=x.device)
         dt = x[:, 1:] - x[:, :-1]
-        return dt.pow(2).mean()
+        return dt.abs().mean()
 
     def forward(self, pred, target):
         mse_loss = F.mse_loss(pred, target)
@@ -64,7 +64,17 @@ class CombinedLoss(nn.Module):
         tv_s = self.tv_spatial(pred)
         tv_t = self.tv_temporal(pred)
 
-        noise_loss = F.mse_loss(pred, F.avg_pool2d(pred, 3, padding=1, count_include_pad=False))
+        # Noise suppression: penalize high-frequency variations
+        # Apply avg_pool2d to spatial dimensions (nx, ny) for each time step
+        # pred shape: (B, T, nx, ny)
+        B, T, nx, ny = pred.shape
+        # Reshape to (B*T, 1, nx, ny) for 2D pooling
+        pred_reshaped = pred.contiguous().view(B * T, 1, nx, ny)
+        # Apply 2D average pooling with padding to maintain size
+        pred_smooth = F.avg_pool2d(pred_reshaped, kernel_size=3, stride=1, padding=1)
+        # Reshape back to (B, T, nx, ny)
+        pred_smooth = pred_smooth.view(B, T, nx, ny)
+        noise_loss = F.mse_loss(pred, pred_smooth)
 
         total = (
             self.mse_weight * mse_loss
@@ -306,8 +316,16 @@ class Trainer:
 
             # Match dimensions: trajectory is (batch, n_times, ny, nx)
             # Model outputs (batch, n_times, nx, ny)
-            n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
+            n_times = min(pred.shape[1], trajectory.shape[1])
+            pred = pred[:, :n_times, :, :]
+
+            # First trim trajectory by time, then permute to match model output format
+            # Data format: trajectory is (B, T, ny, nx), model outputs (B, T, nx, ny)
+            trajectory_trimmed = trajectory[:, :n_times, :, :]
+            target = trajectory_trimmed.permute(0, 1, 3, 2)  # (B, T, ny, nx) -> (B, T, nx, ny)
+
+            # Final assert - shapes must match exactly
+            assert pred.shape == target.shape, f"Shape mismatch: pred={pred.shape}, target={target.shape}"
 
             loss = self.criterion(pred, target)
             loss.backward()
@@ -331,8 +349,18 @@ class Trainer:
 
             pred = self.model(params)
 
-            n_times = pred.shape[1]
-            target = trajectory[:, :n_times, :, :].permute(0, 1, 3, 2)
+            # Match dimensions: trajectory is (batch, n_times, ny, nx)
+            # Model outputs (batch, n_times, nx, ny)
+            n_times = min(pred.shape[1], trajectory.shape[1])
+            pred = pred[:, :n_times, :, :]
+
+            # First trim trajectory by time, then permute to match model output format
+            # Data format: trajectory is (B, T, ny, nx), model outputs (B, T, nx, ny)
+            trajectory_trimmed = trajectory[:, :n_times, :, :]
+            target = trajectory_trimmed.permute(0, 1, 3, 2)  # (B, T, ny, nx) -> (B, T, nx, ny)
+
+            # Final assert - shapes must match exactly
+            assert pred.shape == target.shape, f"Shape mismatch: pred={pred.shape}, target={target.shape}"
 
             loss = self.criterion(pred, target)
             total_loss += loss.item()
@@ -515,8 +543,10 @@ def main(config_path: Path = None, resume_from: Path = None):
         batch_size = min(batch_size, 4)
 
     train_ratio = train_cfg.get('train_ratio', 0.8)
+    max_samples = train_cfg.get('max_samples', None)
     train_loader, val_loader = create_dataloaders(
-        data_dir, batch_size=batch_size, train_ratio=train_ratio, num_workers=0, config_path=config_path
+        data_dir, batch_size=batch_size, train_ratio=train_ratio, num_workers=0,
+        config_path=config_path, max_samples=max_samples
     )
 
     sample = next(iter(train_loader))
@@ -537,6 +567,78 @@ def main(config_path: Path = None, resume_from: Path = None):
     print(f"Training for {n_epochs} epochs (lr={lr}, patience={patience})...")
     print(f"Data: {len(train_loader.dataset)} train, {len(val_loader.dataset)} val")
     print(f"Grid: {metadata['nx']}x{metadata['ny']}, {n_times} time steps, {n_params} params")
+
+    # Check if resuming from checkpoint and detect model parameters BEFORE creating model
+    resume_path = resume_from or train_cfg.get('resume_from')
+    if resume_path:
+        if isinstance(resume_path, str):
+            resume_path = Path(resume_path)
+        # Все относительные пути разрешаются относительно папки checkpoints
+        if not resume_path.is_absolute():
+            # Try adaptive first, then classic, then root
+            adaptive_path = checkpoint_dir / 'adaptive' / resume_path
+            classic_path = checkpoint_dir / 'classic' / resume_path
+            root_path = checkpoint_dir / resume_path
+
+            if adaptive_path.exists():
+                resume_path = adaptive_path
+            elif classic_path.exists():
+                resume_path = classic_path
+            elif root_path.exists():
+                resume_path = root_path
+            else:
+                resume_path = checkpoint_dir / resume_path
+
+        if not resume_path.exists():
+            available = []
+            if checkpoint_dir.exists():
+                available.extend(checkpoint_dir.glob('*.pt'))
+                available.extend((checkpoint_dir / 'adaptive').glob('*.pt'))
+                available.extend((checkpoint_dir / 'classic').glob('*.pt'))
+            raise FileNotFoundError(
+                f"Checkpoint not found: {resume_path}\n"
+                f"Available checkpoints: {[p.name for p in available]}"
+            )
+
+        # Load checkpoint to detect model parameters
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+        if 'base_model_state_dict' in checkpoint:
+            state_dict = checkpoint['base_model_state_dict']
+        else:
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+
+        # Detect model parameters from checkpoint
+        checkpoint_width = None
+        checkpoint_modes1 = None
+        checkpoint_modes2 = None
+        checkpoint_use_adaptive = None
+
+        if 'lift.0.weight' in state_dict:
+            checkpoint_width = state_dict['lift.0.weight'].shape[0]
+        elif 'fno_layers.0.local_conv.weight' in state_dict:
+            checkpoint_width = state_dict['fno_layers.0.local_conv.weight'].shape[0]
+
+        if 'fno_layers.0.spectral_conv.weights1' in state_dict:
+            checkpoint_modes1 = state_dict['fno_layers.0.spectral_conv.weights1'].shape[2]
+            checkpoint_modes2 = state_dict['fno_layers.0.spectral_conv.weights1'].shape[3]
+
+        has_adaptive = 'adaptive_temporal_smooth.kernel' in state_dict
+        has_old_smoothing = 'spatial_smooth.kernel' in state_dict or any('lowpass' in k for k in state_dict.keys())
+        checkpoint_use_adaptive = has_adaptive and not has_old_smoothing
+
+        # Update model_cfg with checkpoint parameters
+        if checkpoint_width is not None:
+            model_cfg['width'] = checkpoint_width
+            print(f"  Using width={checkpoint_width} from checkpoint")
+        if checkpoint_modes1 is not None:
+            model_cfg['modes1'] = checkpoint_modes1
+            print(f"  Using modes1={checkpoint_modes1} from checkpoint")
+        if checkpoint_modes2 is not None:
+            model_cfg['modes2'] = checkpoint_modes2
+            print(f"  Using modes2={checkpoint_modes2} from checkpoint")
+        if checkpoint_use_adaptive is not None:
+            model_cfg['use_adaptive_smoothing'] = checkpoint_use_adaptive
+            print(f"  Using use_adaptive_smoothing={checkpoint_use_adaptive} from checkpoint")
 
     model = create_model(
         nx=metadata['nx'],
@@ -563,19 +665,7 @@ def main(config_path: Path = None, resume_from: Path = None):
         checkpoint_dir=checkpoint_dir
     )
 
-    resume_path = resume_from or train_cfg.get('resume_from')
     if resume_path:
-        if isinstance(resume_path, str):
-            resume_path = Path(resume_path)
-        # Все относительные пути разрешаются относительно папки checkpoints
-        if not resume_path.is_absolute():
-            resume_path = checkpoint_dir / resume_path
-        if not resume_path.exists():
-            available = list(checkpoint_dir.glob('*.pt')) if checkpoint_dir.exists() else []
-            raise FileNotFoundError(
-                f"Checkpoint not found: {resume_path}\n"
-                f"Available checkpoints in {checkpoint_dir}: {[p.name for p in available]}"
-            )
         trainer.load_checkpoint(resume_path)
 
     trainer.train()

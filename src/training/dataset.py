@@ -51,7 +51,7 @@ def validate_params(params_raw: np.ndarray, gen_cfg: dict) -> bool:
 class ProppantDataset(Dataset):
     """Dataset of proppant transport simulations."""
 
-    def __init__(self, data_dir: Path, transform=None, gen_cfg: dict = None):
+    def __init__(self, data_dir: Path, transform=None, gen_cfg: dict = None, max_samples: int = None):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.gen_cfg = gen_cfg
@@ -92,6 +92,12 @@ class ProppantDataset(Dataset):
             self.files = valid_files
             if len(self.files) == 0:
                 raise ValueError(f"No valid data files found in {data_dir}")
+
+        # Limit number of samples if max_samples is specified (after validation)
+        if max_samples is not None and max_samples > 0:
+            if len(self.files) > max_samples:
+                print(f"Limiting dataset to {max_samples} samples (found {len(self.files)} total)")
+                self.files = self.files[:max_samples]
 
     def __len__(self) -> int:
         return len(self.files)
@@ -473,12 +479,13 @@ def create_dataloaders(
     batch_size: int = 8,
     train_ratio: float = 0.8,
     num_workers: int = 0,
-    config_path: Path | None = None
+    config_path: Path | None = None,
+    max_samples: int = None
 ) -> Tuple[DataLoader, DataLoader]:
     """Create train and validation dataloaders."""
     project_root = Path(data_dir).parent.parent
     gen_cfg = load_generation_config(config_path=config_path, project_root=project_root)
-    dataset = ProppantDataset(data_dir, gen_cfg=gen_cfg)
+    dataset = ProppantDataset(data_dir, gen_cfg=gen_cfg, max_samples=max_samples)
 
     n_train = int(len(dataset) * train_ratio)
     n_val = len(dataset) - n_train

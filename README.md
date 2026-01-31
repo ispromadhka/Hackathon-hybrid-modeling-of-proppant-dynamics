@@ -179,11 +179,19 @@ Checkpoints are saved in separate subdirectories based on smoothing type:
   - `checkpoints/adaptive/last.pt` — Latest checkpoint
   - `checkpoints/adaptive/best.pt` — Best validation loss checkpoint
 
+**Automatic Model Parameter Detection:**
+When resuming from a checkpoint, the training script automatically:
+- Detects model architecture parameters (`width`, `modes1`, `modes2`) from the checkpoint
+- Detects smoothing type (`use_adaptive_smoothing`) from the checkpoint
+- Creates the model with matching parameters to ensure compatibility
+- Searches for checkpoints in `checkpoints/adaptive/`, `checkpoints/classic/`, and `checkpoints/` root
+
 **Note:**
 - If you provide an absolute path, it will be used as-is
 - Relative paths are resolved relative to the `checkpoints/` directory
 - You can specify subdirectory: `--resume classic/best.pt` or `--resume adaptive/best.pt`
 - Old checkpoints in `checkpoints/` root are still supported for backward compatibility
+- Model parameters from checkpoint override config values to ensure compatibility
 
 When resuming, the trainer restores:
 - Model weights
