@@ -303,6 +303,22 @@ main {
     border-radius: 4px;
 }
 
+/* Error plot row - wide horizontal layout */
+.error-row {
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.error-container {
+    width: 100%;
+    min-width: 100%;
+}
+
+.error-plot {
+    aspect-ratio: 2 / 1;
+    min-height: 200px;
+}
+
 /* Timelapse controls */
 .timelapse-controls {
     display: flex;
