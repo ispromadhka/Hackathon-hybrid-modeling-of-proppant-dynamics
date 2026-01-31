@@ -287,11 +287,12 @@ async def simulate(params: SimulationParams):
     dT = MODEL_META.get('dT', 2.0) if MODEL_META else 2.0
     Tmax = MODEL_META.get('Tmax', 400.0) if MODEL_META else 400.0
     cmax = MODEL_META.get('cmax', 0.635) if MODEL_META else 0.635
-    Lx = MODEL_META.get('L', 100.0) if MODEL_META else 100.0
-    Ly = MODEL_META.get('H', 60.0) if MODEL_META else 60.0
-    # Use model dimensions from checkpoint (not metadata!)
+    # Use model dimensions from checkpoint (100x100 square)
     nx = MODEL_NX
     ny = MODEL_NY
+    # Physical domain matching grid (square)
+    Lx = float(nx)  # L = nx для квадратной сетки
+    Ly = float(ny)  # H = ny
 
     # Note: Negative Q for solver convention (inflow)
     Q_internal = -abs(params.Q)

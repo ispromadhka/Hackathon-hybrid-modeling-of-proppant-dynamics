@@ -266,12 +266,23 @@ main {
     overflow-y: auto;
 }
 
+/* Container for two plots side by side */
+.plots-row {
+    display: flex;
+    gap: 16px;
+    flex: 1;
+    min-height: 0;
+}
+
 .plot-container {
+    flex: 1;
     background-color: var(--bg-secondary);
     border-radius: 8px;
     border: 1px solid var(--border-color);
     padding: 16px;
     box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
 }
 
 .plot-container h3 {
@@ -279,11 +290,14 @@ main {
     font-weight: 500;
     color: var(--text-secondary);
     margin-bottom: 12px;
+    text-align: center;
 }
 
 .plot {
+    flex: 1;
     width: 100%;
-    height: 280px;
+    min-height: 350px;
+    aspect-ratio: 1 / 1;
     background-color: var(--bg-tertiary);
     border-radius: 4px;
 }
@@ -383,6 +397,16 @@ main {
 }
 
 /* Responsive */
+@media (max-width: 1200px) {
+    .plots-row {
+        flex-direction: column;
+    }
+
+    .plot {
+        min-height: 300px;
+    }
+}
+
 @media (max-width: 900px) {
     main {
         flex-direction: column;

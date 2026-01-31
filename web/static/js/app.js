@@ -69,7 +69,7 @@ function toggleTheme() {
 
 themeToggle.addEventListener('click', toggleTheme);
 
-// Конфигурация Plotly
+// Конфигурация Plotly - квадратные графики
 function getPlotlyLayout(xRange, yRange) {
     const isDark = document.body.classList.contains('dark-theme');
     return {
@@ -80,15 +80,17 @@ function getPlotlyLayout(xRange, yRange) {
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
             zerolinecolor: isDark ? '#3d4450' : '#dce1e7',
-            range: xRange || [0, 60],
-            constrain: 'domain'
+            range: xRange || [0, 100],
+            constrain: 'domain',
+            scaleanchor: 'y',
+            scaleratio: 1
         },
         yaxis: {
             title: 'y (м)',
             color: isDark ? '#95a5a6' : '#5d6d7e',
             gridcolor: isDark ? '#3d4450' : '#dce1e7',
             zerolinecolor: isDark ? '#3d4450' : '#dce1e7',
-            range: yRange || [0, 60],
+            range: yRange || [0, 100],
             constrain: 'domain'
         },
         paper_bgcolor: isDark ? '#242830' : '#ffffff',
@@ -111,7 +113,7 @@ function getColorscale() {
 
 // Инициализация пустых графиков
 function initEmptyPlots() {
-    const layout = getPlotlyLayout([0, 100], [0, 60]);  // L=100, H=60
+    const layout = getPlotlyLayout([0, 100], [0, 100]);  // 100x100 квадрат
     const config = {
         responsive: true,
         displayModeBar: true,
