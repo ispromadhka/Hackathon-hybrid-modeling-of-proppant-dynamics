@@ -40,6 +40,10 @@ simulation_data/
 simulation_timeseries/
 simulation_results.csv
 torch_data/
+.simulation_data/
+.simulation_timeseries/
+.simulation_gifs/
+.torch_data/
 *.tmp
 *.tmp.*
 tmp*/
@@ -93,6 +97,7 @@ figures/
 results/
 reference_frames/
 .simulation_gifs/
+.simulation_gifs/*
 
 # Test files
 *.test.py
@@ -122,14 +127,13 @@ coverage.xml
 
 # Temporary files
 *.tmp
+*.tmp.*
 *.bak
 *.swp
 *.swo
 *~
 *.orig
 *.rej
-*.swo
-*.swp
 
 # Database files
 *.db
@@ -147,6 +151,8 @@ dist/
 src/solver/Case1/
 src/solver/t.ipynb
 src/solver/t.py
+.src/solver/t.ipynb
+.src/solver/t.py
 
 # Web static files (keep structure, ignore generated)
 web/static/generated/
