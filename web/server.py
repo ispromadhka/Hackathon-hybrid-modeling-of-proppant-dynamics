@@ -35,6 +35,8 @@ MODEL = None
 MODEL_META = None
 MODEL_VALID = False
 MODEL_WARNING = None
+MODEL_NX = 100  # Model grid dimensions (from checkpoint)
+MODEL_NY = 100
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 app = FastAPI(title="Proppant Transport Simulator")
@@ -54,7 +56,7 @@ class SimulationParams(BaseModel):
 
 def load_model():
     """Load the trained model with compatibility for old complex weights."""
-    global MODEL, MODEL_META, MODEL_VALID, MODEL_WARNING
+    global MODEL, MODEL_META, MODEL_VALID, MODEL_WARNING, MODEL_NX, MODEL_NY
 
     MODEL_VALID = False
     MODEL_WARNING = None
@@ -121,6 +123,10 @@ def load_model():
 
     if n_times is None:
         n_times = MODEL_META.get('n_times', 201)
+
+    # Save model dimensions globally for solver
+    MODEL_NX = nx
+    MODEL_NY = ny
 
     print(f"Создание модели НС: nx={nx}, ny={ny}, n_times={n_times}, n_params={n_params}")
     MODEL = create_model(nx=nx, ny=ny, n_times=n_times, n_params=n_params, device=DEVICE)
@@ -277,14 +283,15 @@ async def index():
 async def simulate(params: SimulationParams):
     """Run simulation with both NN and NS solver."""
 
-    # Get config values
+    # Get config values - use MODEL_NX/NY from checkpoint for consistency
     dT = MODEL_META.get('dT', 2.0) if MODEL_META else 2.0
     Tmax = MODEL_META.get('Tmax', 400.0) if MODEL_META else 400.0
     cmax = MODEL_META.get('cmax', 0.635) if MODEL_META else 0.635
-    Lx = MODEL_META.get('L', 60.0) if MODEL_META else 60.0
+    Lx = MODEL_META.get('L', 100.0) if MODEL_META else 100.0
     Ly = MODEL_META.get('H', 60.0) if MODEL_META else 60.0
-    nx = MODEL_META.get('nx', 100) if MODEL_META else 100
-    ny = MODEL_META.get('ny', 100) if MODEL_META else 100
+    # Use model dimensions from checkpoint (not metadata!)
+    nx = MODEL_NX
+    ny = MODEL_NY
 
     # Note: Negative Q for solver convention (inflow)
     Q_internal = -abs(params.Q)
